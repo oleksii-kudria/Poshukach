@@ -11,7 +11,7 @@ records by MAC address. The resulting dataset is written to
 
 The ``source``/``ip``/``name`` fields correspond to the most recent log
 entry for the MAC address, timestamps are reported both as the original
-epoch values and in human readable form (``Europe/Kyiv``), and
+epoch values and in human readable form (UTC), and
 ``randomized`` indicates whether the MAC address uses a locally
 administered prefix.
 """
@@ -22,10 +22,9 @@ import csv
 import re
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
-from zoneinfo import ZoneInfo
 
 MANDATORY_FIELDS: List[str] = [
     "logSourceIdentifier",
@@ -41,7 +40,6 @@ PAYLOAD_PATTERN = re.compile(
 
 CLIENT_MESSAGE_PATTERN = re.compile(r"^dhcp,info\s+dhcp-client\s+on", re.IGNORECASE)
 
-KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
 
 @dataclass
@@ -164,7 +162,7 @@ def parse_epoch(epoch_raw: str) -> Tuple[int, float]:
 
 
 def epoch_to_str(seconds: float) -> str:
-    dt = datetime.fromtimestamp(seconds, tz=timezone.utc).astimezone(KYIV_TZ)
+    dt = datetime.utcfromtimestamp(seconds)
     return dt.strftime("%Y.%m.%d %H:%M")
 
 
