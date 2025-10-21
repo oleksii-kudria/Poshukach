@@ -39,6 +39,8 @@ PAYLOAD_PATTERN = re.compile(
     r"(?P<mac>[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})(?P<name>.*)$"
 )
 
+CLIENT_MESSAGE_PATTERN = re.compile(r"^dhcp,info\s+dhcp-client\s+on", re.IGNORECASE)
+
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
 
@@ -171,6 +173,10 @@ def is_randomized_mac(mac: str) -> bool:
     return (first_octet & 0x02) != 0
 
 
+def is_client_message(payload: str) -> bool:
+    return bool(CLIENT_MESSAGE_PATTERN.search(payload.strip()))
+
+
 def parse_payload(payload: str) -> Tuple[str, str, str]:
     match = PAYLOAD_PATTERN.search(payload)
     if not match:
@@ -249,6 +255,9 @@ def main() -> int:
 
                 if not mac or not payload or not epoch_raw:
                     raise ValueError("Рядок містить порожні обовʼязкові поля")
+
+                if is_client_message(payload):
+                    continue
 
                 try:
                     ip, payload_mac, name = parse_payload(payload)
