@@ -404,12 +404,102 @@ def run_mac_scan(repo_root: Path) -> int:
     return 0
 
 
+def run_compare_dhcp_and_mac(repo_root: Path) -> int:
+    interim_dir = repo_root / "data" / "interim"
+    result_dir = repo_root / "data" / "result"
+
+    mac_path = interim_dir / "mac.csv"
+    dhcp_path = interim_dir / "dhcp.csv"
+
+    if not dhcp_path.exists():
+        print("❌ Файл data/interim/dhcp.csv не знайдено")
+        return 1
+
+    if not mac_path.exists():
+        print("❌ Файл data/interim/mac.csv не знайдено")
+        return 1
+
+    try:
+        with mac_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            mac_reader = csv.DictReader(handle)
+            mac_fieldnames = mac_reader.fieldnames or []
+            if "mac" not in mac_fieldnames:
+                print("❌ Файл data/interim/mac.csv не містить колонки 'mac'")
+                return 1
+            mac_set = {
+                (row.get("mac") or "").strip().upper()
+                for row in mac_reader
+                if (row.get("mac") or "").strip()
+            }
+    except OSError as exc:
+        print(f"❌ Неможливо прочитати data/interim/mac.csv: {exc}")
+        return 1
+
+    if not mac_set:
+        print("⚠️ У data/interim/mac.csv відсутні MAC-адреси для порівняння")
+
+    result_dir.mkdir(parents=True, exist_ok=True)
+
+    true_path = result_dir / "dhcp-true.csv"
+    false_path = result_dir / "dhcp-false.csv"
+
+    try:
+        with dhcp_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            headers = reader.fieldnames
+            if not headers:
+                print("❌ Файл data/interim/dhcp.csv не містить заголовок")
+                return 1
+
+            with true_path.open("w", encoding="utf-8", newline="") as true_handle, \
+                false_path.open("w", encoding="utf-8", newline="") as false_handle:
+
+                writer_true = csv.DictWriter(true_handle, fieldnames=headers)
+                writer_false = csv.DictWriter(false_handle, fieldnames=headers)
+                writer_true.writeheader()
+                writer_false.writeheader()
+
+                match_count = 0
+                miss_count = 0
+
+                for row in reader:
+                    if row is None:
+                        continue
+
+                    randomized_value = (row.get("randomized") or "").strip().lower()
+                    if randomized_value != "false":
+                        continue
+
+                    mac_value = (row.get("mac") or "").strip().upper()
+                    if mac_value and mac_value in mac_set:
+                        writer_true.writerow(row)
+                        match_count += 1
+                    else:
+                        writer_false.writerow(row)
+                        miss_count += 1
+    except OSError as exc:
+        print(f"❌ Неможливо прочитати data/interim/dhcp.csv: {exc}")
+        return 1
+
+    print(f"✅ DHCP збігів знайдено: {match_count}")
+    print(f"⚠️ DHCP без збігів: {miss_count}")
+    print(
+        "📁 Результати збережено до data/result/dhcp-true.csv та data/result/dhcp-false.csv"
+    )
+
+    return 0
+
+
 def run_all(repo_root: Path) -> int:
     dhcp_result = run_dhcp_aggregation(repo_root)
     if dhcp_result != 0:
         return dhcp_result
 
-    return run_mac_scan(repo_root)
+    mac_result = run_mac_scan(repo_root)
+    if mac_result != 0:
+        return mac_result
+
+    return run_compare_dhcp_and_mac(repo_root)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -429,6 +519,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Зібрати унікальні MAC-адреси з data/raw/av-mac",
     )
     mac_parser.set_defaults(command_func=run_mac_scan)
+
+    compare_parser = subparsers.add_parser(
+        "compare-dhcp-mac",
+        help="Порівняти MAC-адреси з data/interim/dhcp.csv та data/interim/mac.csv",
+    )
+    compare_parser.set_defaults(command_func=run_compare_dhcp_and_mac)
 
     all_parser = subparsers.add_parser(
         "all",
