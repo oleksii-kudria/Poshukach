@@ -1,1 +1,16 @@
+rules:
+- mode: prefix
+  patterns:
+    - "TV-"
+    - "Redmi-"
 
+- mode: contains
+  patterns:
+    - "epson"
+    - "iphone"
+    - "samsung"
+    - "unknown"
+
+- mode: regex
+  patterns:
+    - "^[gisy][0-9]{9}$"
