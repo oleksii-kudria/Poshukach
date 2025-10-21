@@ -532,6 +532,7 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
 
     true_path = result_dir / "dhcp-true.csv"
     false_path = result_dir / "dhcp-false.csv"
+    ignore_path = result_dir / "dhcp-ignore.csv"
 
     ignored_count = 0
 
@@ -544,12 +545,15 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
                 return 1
 
             with true_path.open("w", encoding="utf-8", newline="") as true_handle, \
-                false_path.open("w", encoding="utf-8", newline="") as false_handle:
+                false_path.open("w", encoding="utf-8", newline="") as false_handle, \
+                ignore_path.open("w", encoding="utf-8", newline="") as ignore_handle:
 
                 writer_true = csv.DictWriter(true_handle, fieldnames=headers)
                 writer_false = csv.DictWriter(false_handle, fieldnames=headers)
+                writer_ignore = csv.DictWriter(ignore_handle, fieldnames=headers)
                 writer_true.writeheader()
                 writer_false.writeheader()
+                writer_ignore.writeheader()
 
                 match_count = 0
                 miss_count = 0
@@ -565,6 +569,7 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
                     name_value = (row.get("name") or "").strip()
                     if should_ignore_device(name_value, ignore_rules):
                         ignored_count += 1
+                        writer_ignore.writerow(row)
                         continue
 
                     mac_value = (row.get("mac") or "").strip().upper()
@@ -578,11 +583,11 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
         print(f"❌ Неможливо прочитати data/interim/dhcp.csv: {exc}")
         return 1
 
-    print(f"🛑 Ігноровано за rules: {ignored_count}")
-    print(f"✅ DHCP збігів знайдено: {match_count}")
+    print(f"🟡 Ігноровано за правилами: {ignored_count}")
+    print(f"✅ DHCP збігів: {match_count}")
     print(f"⚠️ DHCP без збігів: {miss_count}")
     print(
-        "📁 Результати збережено до data/result/dhcp-true.csv та data/result/dhcp-false.csv"
+        "📁 Результати збережено до data/result/dhcp-true.csv, data/result/dhcp-false.csv та data/result/dhcp-ignore.csv"
     )
 
     return 0
