@@ -1,23 +1,34 @@
 #!/usr/bin/env python3
-"""Aggregate DHCP log files into ``data/interim/dhcp.csv``.
+"""CLI utilities for working with Poshukach datasets.
 
-The script reads every CSV file in ``data/raw/dhcp`` (excluding
-``*.example.csv``), validates their headers and then aggregates the
-records by MAC address. The resulting dataset is written to
-``data/interim/dhcp.csv`` with the following columns::
+The script provides two main commands:
 
-    source,ip,mac,name,firstDate,lastDate,firstDateEpoch,lastDateEpoch,
-    count,randomized,dateList
+``dhcp-aggregate``
+    Aggregate DHCP log files into ``data/interim/dhcp.csv``. The command
+    reads every CSV file in ``data/raw/dhcp`` (excluding ``*.example.csv``),
+    validates their headers and then aggregates the records by MAC
+    address. The resulting dataset is written to
+    ``data/interim/dhcp.csv`` with the following columns::
 
-The ``source``/``ip``/``name`` fields correspond to the most recent log
-entry for the MAC address, timestamps are reported both as the original
-epoch values and in human readable form (UTC), and
-``randomized`` indicates whether the MAC address uses a locally
-administered prefix.
+        source,ip,mac,name,firstDate,lastDate,firstDateEpoch,lastDateEpoch,
+        count,randomized,dateList
+
+    The ``source``/``ip``/``name`` fields correspond to the most recent
+    log entry for the MAC address, timestamps are reported both as the
+    original epoch values and in human readable form (UTC), and
+    ``randomized`` indicates whether the MAC address uses a locally
+    administered prefix.
+
+``mac-scan``
+    Scan ``data/raw/av-mac`` for MAC addresses in arbitrary CSV files,
+    normalise them to ``XX:XX:XX:XX:XX:XX`` format and write the unique
+    results into ``data/interim/mac.csv`` together with the file name
+    where the address was first seen.
 """
 
 from __future__ import annotations
 
+import argparse
 import csv
 import re
 import sys
@@ -25,6 +36,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
+
+MAC_PATTERN = re.compile(r"""(?i)\b([0-9a-f]{2}([-:]))(?:[0-9a-f]{2}\2){4}[0-9a-f]{2}\b""")
 
 MANDATORY_FIELDS: List[str] = [
     "logSourceIdentifier",
@@ -206,8 +219,7 @@ def read_rows(csv_path: Path, header: List[str]) -> Iterable[List[str]]:
         raise OSError(f"Помилка читання файлу: {exc}") from exc
 
 
-def main() -> int:
-    repo_root = Path(__file__).resolve().parent.parent
+def run_dhcp_aggregation(repo_root: Path) -> int:
     dhcp_dir = repo_root / "data" / "raw" / "dhcp"
     interim_dir = repo_root / "data" / "interim"
     output_path = interim_dir / "dhcp.csv"
@@ -337,6 +349,89 @@ def main() -> int:
 
     print(f"✅ Записано рядків до data/interim/dhcp.csv: {written_rows}")
     return 0
+
+
+def iter_mac_csv_files(mac_dir: Path) -> Iterable[Path]:
+    if not mac_dir.exists():
+        return []
+
+    files = sorted(
+        path for path in mac_dir.glob("*.csv") if not path.name.endswith(".example.csv")
+    )
+    return files
+
+
+def normalise_mac(value: str) -> str:
+    return value.replace("-", ":").upper()
+
+
+def run_mac_scan(repo_root: Path) -> int:
+    mac_dir = repo_root / "data" / "raw" / "av-mac"
+    interim_dir = repo_root / "data" / "interim"
+    output_path = interim_dir / "mac.csv"
+
+    files = list(iter_mac_csv_files(mac_dir))
+
+    mac_sources: Dict[str, str] = {}
+
+    for file_path in files:
+        rel_path = file_path.relative_to(repo_root)
+        try:
+            with file_path.open("r", encoding="utf-8-sig", errors="ignore") as handle:
+                content = handle.read()
+        except OSError as exc:
+            print(f"⚠️ Неможливо прочитати {rel_path}: {exc}")
+            continue
+
+        for match in MAC_PATTERN.finditer(content):
+            normalised = normalise_mac(match.group(0))
+            mac_sources.setdefault(normalised, file_path.name)
+
+    if not mac_sources:
+        print("⚠️ MAC-адрес не знайдено у data/raw/av-mac/*.csv")
+        return 0
+
+    interim_dir.mkdir(parents=True, exist_ok=True)
+
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["mac", "source"])
+        for mac in sorted(mac_sources.keys()):
+            writer.writerow([mac, mac_sources[mac]])
+
+    print(f"✅ Унікальних MAC-адрес: {len(mac_sources)}")
+    print("✅ Результат збережено у data/interim/mac.csv")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Утиліта для обробки даних Poshukach",
+    )
+    subparsers = parser.add_subparsers(dest="command")
+
+    dhcp_parser = subparsers.add_parser(
+        "dhcp-aggregate",
+        help="Агрегувати DHCP журнали у data/interim/dhcp.csv",
+    )
+    dhcp_parser.set_defaults(command_func=run_dhcp_aggregation)
+
+    mac_parser = subparsers.add_parser(
+        "mac-scan",
+        help="Зібрати унікальні MAC-адреси з data/raw/av-mac",
+    )
+    mac_parser.set_defaults(command_func=run_mac_scan)
+
+    return parser
+
+
+def main(argv: List[str] | None = None) -> int:
+    repo_root = Path(__file__).resolve().parent.parent
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    command_func = getattr(args, "command_func", run_dhcp_aggregation)
+    return command_func(repo_root)
 
 
 if __name__ == "__main__":
