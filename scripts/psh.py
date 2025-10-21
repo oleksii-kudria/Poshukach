@@ -404,6 +404,14 @@ def run_mac_scan(repo_root: Path) -> int:
     return 0
 
 
+def run_all(repo_root: Path) -> int:
+    dhcp_result = run_dhcp_aggregation(repo_root)
+    if dhcp_result != 0:
+        return dhcp_result
+
+    return run_mac_scan(repo_root)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Утиліта для обробки даних Poshukach",
@@ -422,6 +430,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mac_parser.set_defaults(command_func=run_mac_scan)
 
+    all_parser = subparsers.add_parser(
+        "all",
+        help="Послідовно виконати обробку DHCP та MAC-адрес",
+    )
+    all_parser.set_defaults(command_func=run_all)
+
     return parser
 
 
@@ -430,7 +444,7 @@ def main(argv: List[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    command_func = getattr(args, "command_func", run_dhcp_aggregation)
+    command_func = getattr(args, "command_func", run_all)
     return command_func(repo_root)
 
 
