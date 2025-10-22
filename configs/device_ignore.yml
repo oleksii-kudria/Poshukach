@@ -14,3 +14,9 @@ rules:
 - mode: regex
   patterns:
     - "^[gisy][0-9]{9}$"
+
+- mode: vendor
+  patterns:
+    - "Ubiquiti Inc"
+    - "Routerboard.com"
+    - "TP-Link Systems Inc"
