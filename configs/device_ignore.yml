@@ -1,8 +1,8 @@
 rules:
 - mode: prefix
   patterns:
-    - "TV-"
-    - "Redmi-"
+    - "redmi-"
+    - "tv-"
 
 - mode: contains
   patterns:
@@ -17,6 +17,7 @@ rules:
 
 - mode: vendor
   patterns:
-    - "Ubiquiti Inc"
     - "Routerboard.com"
+    - "SHENZHEN YUNJI INTELLIGENT TECHNOLOGY CO.,LTD"
     - "TP-Link Systems Inc"
+    - "Ubiquiti Inc"
