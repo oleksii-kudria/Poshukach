@@ -640,8 +640,10 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
     true_path = result_dir / "dhcp-true.csv"
     false_path = result_dir / "dhcp-false.csv"
     ignore_path = result_dir / "dhcp-ignore.csv"
+    random_path = result_dir / "dhcp-random.csv"
 
     ignored_count = 0
+    random_count = 0
 
     try:
         with dhcp_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -653,14 +655,17 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
 
             with true_path.open("w", encoding="utf-8", newline="") as true_handle, \
                 false_path.open("w", encoding="utf-8", newline="") as false_handle, \
-                ignore_path.open("w", encoding="utf-8", newline="") as ignore_handle:
+                ignore_path.open("w", encoding="utf-8", newline="") as ignore_handle, \
+                random_path.open("w", encoding="utf-8", newline="") as random_handle:
 
                 writer_true = csv.DictWriter(true_handle, fieldnames=headers)
                 writer_false = csv.DictWriter(false_handle, fieldnames=headers)
                 writer_ignore = csv.DictWriter(ignore_handle, fieldnames=headers)
+                writer_random = csv.DictWriter(random_handle, fieldnames=headers)
                 writer_true.writeheader()
                 writer_false.writeheader()
                 writer_ignore.writeheader()
+                writer_random.writeheader()
 
                 match_count = 0
                 miss_count = 0
@@ -670,6 +675,10 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
                         continue
 
                     randomized_value = (row.get("randomized") or "").strip().lower()
+                    if randomized_value == "true":
+                        writer_random.writerow(row)
+                        random_count += 1
+                        continue
                     if randomized_value != "false":
                         continue
 
@@ -696,6 +705,8 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
         print(f"❌ Неможливо прочитати data/interim/dhcp.csv: {exc}")
         return 1
 
+    print(f"🔹 Випадкових MAC-адрес виявлено: {random_count}")
+    print("📁 Збережено до data/result/dhcp-random.csv")
     print(f"🟡 Ігноровано за правилами: {ignored_count}")
     print(f"✅ DHCP збігів: {match_count}")
     print(f"⚠️ DHCP без збігів: {miss_count}")
