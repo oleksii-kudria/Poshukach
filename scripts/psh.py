@@ -46,9 +46,15 @@ MAC_PATTERN = re.compile(r"""(?i)\b([0-9a-f]{2}([-:]))(?:[0-9a-f]{2}\2){4}[0-9a-
 DeviceIgnoreRule = Tuple[str, List[object]]
 
 
-def load_device_ignore_rules(config_path: Path) -> List[DeviceIgnoreRule]:
+@dataclass
+class DeviceIgnoreConfig:
+    name_rules: List[DeviceIgnoreRule] = field(default_factory=list)
+    vendor_patterns: List[str] = field(default_factory=list)
+
+
+def load_device_ignore_rules(config_path: Path) -> DeviceIgnoreConfig:
     if not config_path.exists():
-        return []
+        return DeviceIgnoreConfig()
 
     config_label = config_path.as_posix()
 
@@ -57,54 +63,57 @@ def load_device_ignore_rules(config_path: Path) -> List[DeviceIgnoreRule]:
             data = yaml.safe_load(handle) or {}
     except OSError as exc:
         print(f"⚠️ Неможливо прочитати {config_label}: {exc}")
-        return []
+        return DeviceIgnoreConfig()
     except yaml.YAMLError as exc:
         print(f"⚠️ Неможливо розпарсити {config_label}: {exc}")
-        return []
+        return DeviceIgnoreConfig()
 
     if not isinstance(data, dict):
         print(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
-        return []
+        return DeviceIgnoreConfig()
 
     rules_data = data.get("rules")
     if rules_data is None:
-        return []
+        return DeviceIgnoreConfig()
 
     if not isinstance(rules_data, list):
         print(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
-        return []
+        return DeviceIgnoreConfig()
 
     compiled_rules: List[DeviceIgnoreRule] = []
-    valid_modes = {"prefix", "contains", "regex"}
+    vendor_patterns: List[str] = []
+    valid_modes = {"prefix", "contains", "regex", "vendor"}
 
     for entry in rules_data:
         if not isinstance(entry, dict):
             print(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
-            return []
+            return DeviceIgnoreConfig()
 
         mode = entry.get("mode")
         patterns = entry.get("patterns")
 
         if mode not in valid_modes or not isinstance(patterns, list):
             print(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
-            return []
+            return DeviceIgnoreConfig()
 
         if not all(isinstance(item, str) for item in patterns):
             print(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
-            return []
+            return DeviceIgnoreConfig()
 
         if mode in {"prefix", "contains"}:
             compiled_rules.append((mode, [pattern.lower() for pattern in patterns]))
-        else:
+        elif mode == "regex":
             try:
                 compiled = [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
             except re.error as exc:
                 print(f"⚠️ Некоректний regex у {config_label}: {exc}")
-                return []
+                return DeviceIgnoreConfig()
 
             compiled_rules.append((mode, compiled))
+        else:  # mode == "vendor"
+            vendor_patterns.extend(pattern.lower() for pattern in patterns)
 
-    return compiled_rules
+    return DeviceIgnoreConfig(name_rules=compiled_rules, vendor_patterns=vendor_patterns)
 
 
 def should_ignore_device(name: str, rules: List[DeviceIgnoreRule]) -> bool:
@@ -127,6 +136,16 @@ def should_ignore_device(name: str, rules: List[DeviceIgnoreRule]) -> bool:
                     return True
 
     return False
+
+
+def should_ignore_vendor(vendor: str, patterns: List[str]) -> bool:
+    if not patterns:
+        return False
+
+    value = vendor or ""
+    lowered = value.lower()
+
+    return any(pattern in lowered for pattern in patterns)
 
 MANDATORY_FIELDS: List[str] = [
     "logSourceIdentifier",
@@ -587,7 +606,7 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
     dhcp_path = interim_dir / "dhcp.csv"
     ignore_rules_path = repo_root / "configs" / "device_ignore.yml"
 
-    ignore_rules = load_device_ignore_rules(ignore_rules_path)
+    ignore_config = load_device_ignore_rules(ignore_rules_path)
 
     if not dhcp_path.exists():
         print("❌ Файл data/interim/dhcp.csv не знайдено")
@@ -655,7 +674,13 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
                         continue
 
                     name_value = (row.get("name") or "").strip()
-                    if should_ignore_device(name_value, ignore_rules):
+                    if should_ignore_device(name_value, ignore_config.name_rules):
+                        ignored_count += 1
+                        writer_ignore.writerow(row)
+                        continue
+
+                    vendor_value = (row.get("vendor") or "").strip()
+                    if should_ignore_vendor(vendor_value, ignore_config.vendor_patterns):
                         ignored_count += 1
                         writer_ignore.writerow(row)
                         continue
