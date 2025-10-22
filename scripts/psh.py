@@ -32,6 +32,8 @@ import argparse
 import csv
 import re
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -491,6 +493,31 @@ def run_mac_scan(repo_root: Path) -> int:
     return 0
 
 
+def run_get_oui(repo_root: Path) -> int:
+    cache_dir = repo_root / "data" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    output_path = cache_dir / "oui.csv"
+    url = "https://standards-oui.ieee.org/oui/oui.csv"
+
+    try:
+        with urllib.request.urlopen(url) as response:
+            data = response.read()
+    except (urllib.error.URLError, OSError):
+        print("⚠️ Не вдалося завантажити OUI-довідник")
+        return 1
+
+    try:
+        with output_path.open("wb") as handle:
+            handle.write(data)
+    except OSError:
+        print("⚠️ Не вдалося завантажити OUI-довідник")
+        return 1
+
+    print("✅ OUI-довідник завантажено: data/cache/oui.csv")
+    return 0
+
+
 def run_compare_dhcp_and_mac(repo_root: Path) -> int:
     interim_dir = repo_root / "data" / "interim"
     result_dir = repo_root / "data" / "result"
@@ -623,6 +650,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mac_parser.set_defaults(command_func=run_mac_scan)
 
+    oui_parser = subparsers.add_parser(
+        "get_oui",
+        help="Завантажити довідник OUI до data/cache/oui.csv",
+    )
+    oui_parser.set_defaults(command_func=run_get_oui)
+
     compare_parser = subparsers.add_parser(
         "compare-dhcp-mac",
         help="Порівняти MAC-адреси з data/interim/dhcp.csv та data/interim/mac.csv",
@@ -642,6 +675,13 @@ def main(argv: List[str] | None = None) -> int:
     repo_root = Path(__file__).resolve().parent.parent
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if getattr(args, "command", None) is None:
+        oui_path = repo_root / "data" / "cache" / "oui.csv"
+        if not oui_path.exists():
+            print("⚠️ Файл data/cache/oui.csv відсутній.")
+            print("  ➜ Запустіть команду: python3 scripts/psh.py get_oui")
+            return 1
 
     command_func = getattr(args, "command_func", run_all)
     return command_func(repo_root)
