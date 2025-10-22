@@ -10,8 +10,8 @@ The script provides two main commands:
     address. The resulting dataset is written to
     ``data/interim/dhcp.csv`` with the following columns::
 
-        source,ip,mac,name,firstDate,lastDate,firstDateEpoch,lastDateEpoch,
-        count,randomized,dateList
+        source,ip,mac,vendor,name,firstDate,lastDate,firstDateEpoch,
+        lastDateEpoch,count,randomized,dateList
 
     The ``source``/``ip``/``name`` fields correspond to the most recent
     log entry for the MAC address, timestamps are reported both as the
@@ -273,6 +273,60 @@ def is_randomized_mac(mac: str) -> bool:
     return (first_octet & 0x02) != 0
 
 
+def normalise_oui(value: str) -> str:
+    return value.replace("-", "").replace(":", "").upper()
+
+
+def load_oui_vendor_map(oui_path: Path) -> Dict[str, str]:
+    if not oui_path.exists():
+        print(
+            "⚠️ Файл data/cache/oui.csv відсутній, значення vendor буде позначено як unknown."
+        )
+        return {}
+
+    vendor_map: Dict[str, str] = {}
+
+    try:
+        with oui_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                if row is None:
+                    continue
+
+                assignment = (row.get("Assignment") or "").strip()
+                organization = (row.get("Organization Name") or "").strip()
+
+                if not assignment or not organization:
+                    continue
+
+                vendor_map[normalise_oui(assignment)] = organization
+    except csv.Error as exc:
+        print(
+            "⚠️ Неможливо розпарсити data/cache/oui.csv, значення vendor буде позначено як unknown."
+        )
+        print(str(exc))
+        return {}
+    except OSError as exc:
+        print(
+            "⚠️ Не вдалося прочитати data/cache/oui.csv, значення vendor буде позначено як unknown."
+        )
+        print(str(exc))
+        return {}
+
+    return vendor_map
+
+
+def resolve_vendor(mac: str, vendor_map: Dict[str, str], randomized: bool) -> str:
+    if randomized:
+        return "unknown"
+
+    oui = normalise_oui(mac)[:6]
+    if not oui:
+        return "unknown"
+
+    return vendor_map.get(oui, "unknown")
+
+
 def is_client_message(payload: str) -> bool:
     return bool(CLIENT_MESSAGE_PATTERN.search(payload.strip()))
 
@@ -389,10 +443,14 @@ def run_dhcp_aggregation(repo_root: Path) -> int:
 
     interim_dir.mkdir(parents=True, exist_ok=True)
 
+    oui_path = repo_root / "data" / "cache" / "oui.csv"
+    vendor_map = load_oui_vendor_map(oui_path)
+
     columns = [
         "source",
         "ip",
         "mac",
+        "vendor",
         "name",
         "firstDate",
         "lastDate",
@@ -417,13 +475,16 @@ def run_dhcp_aggregation(repo_root: Path) -> int:
             first_date = epoch_to_str(agg.first_seconds)
             last_date = epoch_to_str(agg.last_seconds)
             date_list = ", ".join(agg.sorted_epoch_strings())
-            randomized = "true" if is_randomized_mac(agg.mac) else "false"
+            randomized_bool = is_randomized_mac(agg.mac)
+            randomized = "true" if randomized_bool else "false"
+            vendor = resolve_vendor(agg.mac, vendor_map, randomized_bool)
 
             writer.writerow(
                 [
                     agg.last_source,
                     agg.last_ip,
                     agg.mac,
+                    vendor,
                     agg.last_name,
                     first_date,
                     last_date,
