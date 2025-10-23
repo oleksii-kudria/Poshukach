@@ -34,10 +34,11 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import DefaultDict, Dict, Iterable, List, Tuple
 
 import yaml
 
@@ -789,6 +790,200 @@ def run_compare_dhcp_and_mac(repo_root: Path, args: argparse.Namespace | None = 
     return 0
 
 
+def sanitise_source_name(value: str) -> str:
+    if not value:
+        return "unknown"
+
+    safe = re.sub(r"[^0-9A-Za-z._-]", "_", value)
+    return safe or "unknown"
+
+
+def normalise_source_value(value: str) -> str:
+    value = value.strip()
+    return value or "unknown"
+
+
+def collect_source_periods(dhcp_dir: Path) -> Dict[str, Tuple[float, float]]:
+    periods: Dict[str, Tuple[float, float]] = {}
+
+    for csv_path in iter_dhcp_csv_files(dhcp_dir):
+        try:
+            with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    if row is None:
+                        continue
+
+                    source_raw = (row.get("logSourceIdentifier") or "").strip()
+                    device_time = (row.get("deviceTime") or "").strip()
+
+                    if not source_raw or not device_time:
+                        continue
+
+                    try:
+                        _, seconds = parse_epoch(device_time)
+                    except ValueError:
+                        continue
+                    source = normalise_source_value(source_raw)
+
+                    if source in periods:
+                        current_min, current_max = periods[source]
+                        periods[source] = (
+                            min(current_min, seconds),
+                            max(current_max, seconds),
+                        )
+                    else:
+                        periods[source] = (seconds, seconds)
+        except OSError as exc:
+            print(f"⚠️ Неможливо прочитати {csv_path.as_posix()}: {exc}")
+
+    return periods
+
+
+def load_dhcp_false_data(false_path: Path) -> Tuple[Dict[str, List[Dict[str, str]]], List[str]]:
+    sources: DefaultDict[str, List[Dict[str, str]]] = defaultdict(list)
+    missing_fields: List[str] = []
+
+    try:
+        with false_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            headers = reader.fieldnames or []
+            if "source" not in headers:
+                missing_fields.append("source")
+                return {}, missing_fields
+
+            for row in reader:
+                if row is None:
+                    continue
+
+                source_value = normalise_source_value(row.get("source") or "")
+
+                device: Dict[str, str] = {}
+                for field in ["name", "mac", "ip", "lastDate", "count", "lastDateEpoch"]:
+                    value = (row.get(field) or "").strip()
+                    device[field] = value if value else "unknown"
+
+                sources[source_value].append(device)
+    except OSError as exc:
+        print(f"❌ Неможливо прочитати data/result/dhcp-false.csv: {exc}")
+        return {}, []
+
+    return sources, missing_fields
+
+
+def render_report_content(
+    *,
+    source: str,
+    devices: List[Dict[str, str]],
+    periods: Dict[str, Tuple[float, float]],
+) -> str:
+    lines: List[str] = []
+    period = periods.get(source)
+
+    if period is None:
+        lines.append(
+            f'Період спостереження: дані відсутні у сирих DHCP-логах для джерела "{source}".'
+        )
+    else:
+        min_date = epoch_to_str(period[0])
+        max_date = epoch_to_str(period[1])
+        lines.append(f"Період спостереження з {min_date} по {max_date}")
+
+    lines.append("")
+
+    if not devices:
+        lines.append(
+            f'На локації з джерелом журналів подій "{source}" пристроїв не виявлено.'
+        )
+        return "\n".join(lines).rstrip() + "\n"
+
+    device_count = len(devices)
+    lines.append(
+        "На локації з джерелом журналів подій "
+        f'"{source}" виявлено {device_count} пристроїв, імовірно таких, що функціонують без АВПЗ.'
+    )
+    lines.append("")
+
+    def sort_key(device: Dict[str, str]) -> Tuple[int, int]:
+        epoch_raw = device.get("lastDateEpoch") or "unknown"
+        try:
+            epoch_value = int(epoch_raw)
+        except ValueError:
+            return (0, 0)
+        return (1, epoch_value)
+
+    sorted_devices = sorted(devices, key=sort_key, reverse=True)
+
+    for index, device in enumerate(sorted_devices):
+        name = device.get("name") or "unknown"
+        mac = device.get("mac") or "unknown"
+        ip = device.get("ip") or "unknown"
+        last_date = device.get("lastDate") or "unknown"
+        count = device.get("count") or "unknown"
+
+        lines.append(f'Пристрій "{name}" — MAC {mac}, IP {ip}.')
+        lines.append(
+            "Останнє отримання мережевих налаштувань від DHCP серверу: "
+            f"{last_date}."
+        )
+        lines.append(
+            "Загальна кількість отримань за період спостереження: "
+            f"{count}."
+        )
+        if index != len(sorted_devices) - 1:
+            lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def run_generate_reports(repo_root: Path, args: argparse.Namespace | None = None) -> int:
+    result_dir = repo_root / "data" / "result"
+    report_dir = repo_root / "data" / "report"
+    dhcp_dir = repo_root / "data" / "raw" / "dhcp"
+
+    false_path = result_dir / "dhcp-false.csv"
+
+    if not false_path.exists():
+        print("❌ Файл data/result/dhcp-false.csv не знайдено")
+        return 1
+
+    grouped_devices, missing_fields = load_dhcp_false_data(false_path)
+
+    if missing_fields:
+        print("❌ Файл data/result/dhcp-false.csv не містить колонку 'source'")
+        return 1
+
+    if not grouped_devices:
+        print("⚠️ Файл data/result/dhcp-false.csv порожній або не містить записів")
+        return 0
+
+    periods = collect_source_periods(dhcp_dir)
+
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    report_count = 0
+
+    for source in sorted(grouped_devices):
+        devices = grouped_devices[source]
+        report_name = f"report-{sanitise_source_name(source)}.txt"
+        report_path = report_dir / report_name
+
+        content = render_report_content(source=source, devices=devices, periods=periods)
+
+        try:
+            with report_path.open("w", encoding="utf-8") as handle:
+                handle.write(content)
+        except OSError as exc:
+            print(f"❌ Неможливо записати {report_path.as_posix()}: {exc}")
+            return 1
+
+        report_count += 1
+        print(f"📄 Створено звіт: {report_path.relative_to(repo_root)}")
+
+    print(f"✅ Загалом сформовано звітів: {report_count}")
+    return 0
+
+
 def run_all(repo_root: Path, args: argparse.Namespace | None = None) -> int:
     dhcp_result = run_dhcp_aggregation(repo_root)
     if dhcp_result != 0:
@@ -846,6 +1041,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Включити randomized-записи до результату dhcp-network.csv",
     )
     all_parser.set_defaults(command_func=run_all)
+
+    report_parser = subparsers.add_parser(
+        "report",
+        help="Згенерувати текстові звіти для джерел із data/result/dhcp-false.csv",
+    )
+    report_parser.set_defaults(command_func=run_generate_reports)
 
     return parser
 
