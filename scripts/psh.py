@@ -152,6 +152,126 @@ def matches_vendor_patterns(vendor: str, patterns: List[str]) -> bool:
 
     return any(pattern in lowered for pattern in patterns)
 
+
+def normalise_device_name(value: str) -> str:
+    value = (value or "").strip()
+    if value:
+        value = re.sub(r"\s+", " ", value)
+
+    value = value or "unknown"
+    return value.lower()
+
+
+def move_name_duplicates(result_dir: Path) -> None:
+    true_path = result_dir / "dhcp-true.csv"
+    false_path = result_dir / "dhcp-false.csv"
+    duplicate_path = result_dir / "dhcp-dublicate.csv"
+
+    missing_sources: List[str] = []
+    for path in (true_path, false_path):
+        if path.exists():
+            continue
+        try:
+            label = path.relative_to(result_dir.parent.parent).as_posix()
+        except ValueError:
+            label = path.as_posix()
+        missing_sources.append(label)
+
+    if missing_sources:
+        formatted = ", ".join(sorted(set(missing_sources)))
+        print(
+            f"⚠️ Пропущено перевірку дублікатів за name: відсутні файли {formatted}"
+        )
+        return
+
+    try:
+        with true_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            headers_true = reader.fieldnames or []
+            if "name" not in headers_true:
+                print(
+                    "⚠️ Пропущено перевірку дублікатів за name: data/result/dhcp-true.csv не містить колонки 'name'"
+                )
+                return
+            true_names = {
+                normalise_device_name(row.get("name"))
+                for row in reader
+                if row is not None
+            }
+    except OSError as exc:
+        print(f"⚠️ Неможливо прочитати data/result/dhcp-true.csv: {exc}")
+        return
+
+    try:
+        with false_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            headers_false = reader.fieldnames
+            if not headers_false:
+                print(
+                    "⚠️ Пропущено перевірку дублікатів за name: data/result/dhcp-false.csv не містить заголовок"
+                )
+                return
+            if "name" not in headers_false:
+                print(
+                    "⚠️ Пропущено перевірку дублікатів за name: data/result/dhcp-false.csv не містить колонки 'name'"
+                )
+                return
+            false_rows = [row for row in reader if row is not None]
+    except OSError as exc:
+        print(f"⚠️ Неможливо прочитати data/result/dhcp-false.csv: {exc}")
+        return
+
+    duplicate_rows: List[Dict[str, str]] = []
+    remaining_rows: List[Dict[str, str]] = []
+
+    for row in false_rows:
+        if normalise_device_name(row.get("name")) in true_names:
+            duplicate_rows.append(row)
+        else:
+            remaining_rows.append(row)
+
+    duplicate_count = len(duplicate_rows)
+
+    if duplicate_count:
+        write_header = True
+        try:
+            if duplicate_path.exists():
+                write_header = duplicate_path.stat().st_size == 0
+        except OSError:
+            write_header = False
+
+        try:
+            with duplicate_path.open("a", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=headers_false)
+                if write_header:
+                    writer.writeheader()
+                writer.writerows(duplicate_rows)
+        except OSError as exc:
+            print(f"⚠️ Неможливо оновити data/result/dhcp-dublicate.csv: {exc}")
+            return
+
+        try:
+            with false_path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=headers_false)
+                writer.writeheader()
+                writer.writerows(remaining_rows)
+        except OSError as exc:
+            print(f"⚠️ Неможливо оновити data/result/dhcp-false.csv: {exc}")
+            return
+
+    print("🔁 Duplicate check by name:")
+    print(f"   • Імен у dhcp-true.csv: {len(true_names)}")
+    print(f"   • Перенесено з dhcp-false.csv до dhcp-dublicate.csv: {duplicate_count}")
+    print(f"   • Залишилось у dhcp-false.csv: {len(remaining_rows)}")
+
+    if duplicate_count:
+        print(
+            "📁 Оновлено: data/result/dhcp-false.csv, створено/оновлено: data/result/dhcp-dublicate.csv"
+        )
+    else:
+        print("📁 Змін не виявлено: data/result/dhcp-false.csv")
+
+
 MANDATORY_FIELDS: List[str] = [
     "logSourceIdentifier",
     "sourcMACAddress",
@@ -772,6 +892,8 @@ def run_compare_dhcp_and_mac(repo_root: Path, args: argparse.Namespace | None = 
     print(
         "📁 Результати збережено до data/result/dhcp-true.csv, data/result/dhcp-false.csv та data/result/dhcp-ignore.csv"
     )
+
+    move_name_duplicates(result_dir)
 
     network_path = result_dir / "dhcp-network.csv"
     network_count, network_success = write_network_results(
