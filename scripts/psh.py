@@ -385,7 +385,7 @@ def read_rows(csv_path: Path, header: List[str]) -> Iterable[List[str]]:
         raise OSError(f"Помилка читання файлу: {exc}") from exc
 
 
-def run_dhcp_aggregation(repo_root: Path) -> int:
+def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None) -> int:
     dhcp_dir = repo_root / "data" / "raw" / "dhcp"
     interim_dir = repo_root / "data" / "interim"
     output_path = interim_dir / "dhcp.csv"
@@ -538,7 +538,7 @@ def normalise_mac(value: str) -> str:
     return value.replace("-", ":").upper()
 
 
-def run_mac_scan(repo_root: Path) -> int:
+def run_mac_scan(repo_root: Path, args: argparse.Namespace | None = None) -> int:
     mac_dir = repo_root / "data" / "raw" / "av-mac"
     interim_dir = repo_root / "data" / "interim"
     output_path = interim_dir / "mac.csv"
@@ -577,7 +577,7 @@ def run_mac_scan(repo_root: Path) -> int:
     return 0
 
 
-def run_get_oui(repo_root: Path) -> int:
+def run_get_oui(repo_root: Path, args: argparse.Namespace | None = None) -> int:
     cache_dir = repo_root / "data" / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -602,7 +602,58 @@ def run_get_oui(repo_root: Path) -> int:
     return 0
 
 
-def run_compare_dhcp_and_mac(repo_root: Path) -> int:
+def write_network_results(
+    *,
+    dhcp_path: Path,
+    network_path: Path,
+    network_config: DeviceFilterConfig,
+    include_randomized: bool,
+) -> tuple[int, bool]:
+    try:
+        with dhcp_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            headers = reader.fieldnames
+            if not headers:
+                print("❌ Файл data/interim/dhcp.csv не містить заголовок")
+                return 0, False
+
+            try:
+                with network_path.open("w", encoding="utf-8", newline="") as network_handle:
+                    writer_network = csv.DictWriter(network_handle, fieldnames=headers)
+                    writer_network.writeheader()
+
+                    network_count = 0
+
+                    for row in reader:
+                        if row is None:
+                            continue
+
+                        randomized_value = (row.get("randomized") or "").strip().lower()
+                        if not include_randomized and randomized_value == "true":
+                            continue
+
+                        name_value = (row.get("name") or "").strip()
+                        vendor_value = (row.get("vendor") or "").strip()
+
+                        if matches_device_rules(name_value, network_config.name_rules) or matches_vendor_patterns(
+                            vendor_value,
+                            network_config.vendor_patterns,
+                        ):
+                            writer_network.writerow(row)
+                            network_count += 1
+
+            except OSError as exc:
+                print(f"❌ Неможливо записати data/result/dhcp-network.csv: {exc}")
+                return 0, False
+
+    except OSError as exc:
+        print(f"❌ Неможливо прочитати data/interim/dhcp.csv: {exc}")
+        return 0, False
+
+    return network_count, True
+
+
+def run_compare_dhcp_and_mac(repo_root: Path, args: argparse.Namespace | None = None) -> int:
     interim_dir = repo_root / "data" / "interim"
     result_dir = repo_root / "data" / "result"
 
@@ -613,6 +664,7 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
     ignore_config = load_device_ignore_rules(ignore_rules_path)
     network_rules_path = repo_root / "configs" / "device_network.yml"
     network_config = load_device_rules(network_rules_path)
+    include_randomized_network = bool(getattr(args, "include_randomized_network", False))
 
     if not dhcp_path.exists():
         print("❌ Файл data/interim/dhcp.csv не знайдено")
@@ -646,11 +698,9 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
     true_path = result_dir / "dhcp-true.csv"
     false_path = result_dir / "dhcp-false.csv"
     ignore_path = result_dir / "dhcp-ignore.csv"
-    network_path = result_dir / "dhcp-network.csv"
     random_path = result_dir / "dhcp-random.csv"
 
     ignored_count = 0
-    network_count = 0
     random_count = 0
 
     try:
@@ -664,18 +714,15 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
             with true_path.open("w", encoding="utf-8", newline="") as true_handle, \
                 false_path.open("w", encoding="utf-8", newline="") as false_handle, \
                 ignore_path.open("w", encoding="utf-8", newline="") as ignore_handle, \
-                network_path.open("w", encoding="utf-8", newline="") as network_handle, \
                 random_path.open("w", encoding="utf-8", newline="") as random_handle:
 
                 writer_true = csv.DictWriter(true_handle, fieldnames=headers)
                 writer_false = csv.DictWriter(false_handle, fieldnames=headers)
                 writer_ignore = csv.DictWriter(ignore_handle, fieldnames=headers)
-                writer_network = csv.DictWriter(network_handle, fieldnames=headers)
                 writer_random = csv.DictWriter(random_handle, fieldnames=headers)
                 writer_true.writeheader()
                 writer_false.writeheader()
                 writer_ignore.writeheader()
-                writer_network.writeheader()
                 writer_random.writeheader()
 
                 match_count = 0
@@ -705,16 +752,6 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
                         writer_ignore.writerow(row)
                         continue
 
-                    if matches_device_rules(name_value, network_config.name_rules):
-                        network_count += 1
-                        writer_network.writerow(row)
-                        continue
-
-                    if matches_vendor_patterns(vendor_value, network_config.vendor_patterns):
-                        network_count += 1
-                        writer_network.writerow(row)
-                        continue
-
                     mac_value = (row.get("mac") or "").strip().upper()
                     if mac_value and mac_value in mac_set:
                         writer_true.writerow(row)
@@ -729,17 +766,30 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
     print(f"🔹 Випадкових MAC-адрес виявлено: {random_count}")
     print("📁 Збережено до data/result/dhcp-random.csv")
     print(f"🟡 Ігноровано за правилами: {ignored_count}")
-    print(f"🔷 Віднесено до мережевих пристроїв: {network_count}")
     print(f"✅ DHCP збігів: {match_count}")
     print(f"⚠️ DHCP без збігів: {miss_count}")
     print(
-        "📁 Результати збережено до data/result/dhcp-true.csv, data/result/dhcp-false.csv, data/result/dhcp-ignore.csv та data/result/dhcp-network.csv"
+        "📁 Результати збережено до data/result/dhcp-true.csv, data/result/dhcp-false.csv та data/result/dhcp-ignore.csv"
     )
+
+    network_path = result_dir / "dhcp-network.csv"
+    network_count, network_success = write_network_results(
+        dhcp_path=dhcp_path,
+        network_path=network_path,
+        network_config=network_config,
+        include_randomized=include_randomized_network,
+    )
+
+    if not network_success:
+        return 1
+
+    print(f"🔷 Віднесено до мережевих пристроїв: {network_count}")
+    print("📁 Збережено до data/result/dhcp-network.csv")
 
     return 0
 
 
-def run_all(repo_root: Path) -> int:
+def run_all(repo_root: Path, args: argparse.Namespace | None = None) -> int:
     dhcp_result = run_dhcp_aggregation(repo_root)
     if dhcp_result != 0:
         return dhcp_result
@@ -748,7 +798,7 @@ def run_all(repo_root: Path) -> int:
     if mac_result != 0:
         return mac_result
 
-    return run_compare_dhcp_and_mac(repo_root)
+    return run_compare_dhcp_and_mac(repo_root, args)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -779,11 +829,21 @@ def build_parser() -> argparse.ArgumentParser:
         "compare-dhcp-mac",
         help="Порівняти MAC-адреси з data/interim/dhcp.csv та data/interim/mac.csv",
     )
+    compare_parser.add_argument(
+        "--include-randomized-network",
+        action="store_true",
+        help="Включити randomized-записи до результату dhcp-network.csv",
+    )
     compare_parser.set_defaults(command_func=run_compare_dhcp_and_mac)
 
     all_parser = subparsers.add_parser(
         "all",
         help="Послідовно виконати обробку DHCP та MAC-адрес",
+    )
+    all_parser.add_argument(
+        "--include-randomized-network",
+        action="store_true",
+        help="Включити randomized-записи до результату dhcp-network.csv",
     )
     all_parser.set_defaults(command_func=run_all)
 
@@ -803,7 +863,7 @@ def main(argv: List[str] | None = None) -> int:
             return 1
 
     command_func = getattr(args, "command_func", run_all)
-    return command_func(repo_root)
+    return command_func(repo_root, args)
 
 
 if __name__ == "__main__":
