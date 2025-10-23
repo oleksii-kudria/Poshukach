@@ -43,18 +43,18 @@ import yaml
 
 MAC_PATTERN = re.compile(r"""(?i)\b([0-9a-f]{2}([-:]))(?:[0-9a-f]{2}\2){4}[0-9a-f]{2}\b""")
 
-DeviceIgnoreRule = Tuple[str, List[object]]
+DeviceRule = Tuple[str, List[object]]
 
 
 @dataclass
-class DeviceIgnoreConfig:
-    name_rules: List[DeviceIgnoreRule] = field(default_factory=list)
+class DeviceFilterConfig:
+    name_rules: List[DeviceRule] = field(default_factory=list)
     vendor_patterns: List[str] = field(default_factory=list)
 
 
-def load_device_ignore_rules(config_path: Path) -> DeviceIgnoreConfig:
+def load_device_rules(config_path: Path) -> DeviceFilterConfig:
     if not config_path.exists():
-        return DeviceIgnoreConfig()
+        return DeviceFilterConfig()
 
     config_label = config_path.as_posix()
 
@@ -63,42 +63,42 @@ def load_device_ignore_rules(config_path: Path) -> DeviceIgnoreConfig:
             data = yaml.safe_load(handle) or {}
     except OSError as exc:
         print(f"⚠️ Неможливо прочитати {config_label}: {exc}")
-        return DeviceIgnoreConfig()
+        return DeviceFilterConfig()
     except yaml.YAMLError as exc:
         print(f"⚠️ Неможливо розпарсити {config_label}: {exc}")
-        return DeviceIgnoreConfig()
+        return DeviceFilterConfig()
 
     if not isinstance(data, dict):
         print(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
-        return DeviceIgnoreConfig()
+        return DeviceFilterConfig()
 
     rules_data = data.get("rules")
     if rules_data is None:
-        return DeviceIgnoreConfig()
+        return DeviceFilterConfig()
 
     if not isinstance(rules_data, list):
         print(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
-        return DeviceIgnoreConfig()
+        return DeviceFilterConfig()
 
-    compiled_rules: List[DeviceIgnoreRule] = []
+    compiled_rules: List[DeviceRule] = []
     vendor_patterns: List[str] = []
     valid_modes = {"prefix", "contains", "regex", "vendor"}
 
     for entry in rules_data:
         if not isinstance(entry, dict):
             print(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
-            return DeviceIgnoreConfig()
+            return DeviceFilterConfig()
 
         mode = entry.get("mode")
         patterns = entry.get("patterns")
 
         if mode not in valid_modes or not isinstance(patterns, list):
             print(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
-            return DeviceIgnoreConfig()
+            return DeviceFilterConfig()
 
         if not all(isinstance(item, str) for item in patterns):
             print(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
-            return DeviceIgnoreConfig()
+            return DeviceFilterConfig()
 
         if mode in {"prefix", "contains"}:
             compiled_rules.append((mode, [pattern.lower() for pattern in patterns]))
@@ -107,16 +107,20 @@ def load_device_ignore_rules(config_path: Path) -> DeviceIgnoreConfig:
                 compiled = [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
             except re.error as exc:
                 print(f"⚠️ Некоректний regex у {config_label}: {exc}")
-                return DeviceIgnoreConfig()
+                return DeviceFilterConfig()
 
             compiled_rules.append((mode, compiled))
         else:  # mode == "vendor"
             vendor_patterns.extend(pattern.lower() for pattern in patterns)
 
-    return DeviceIgnoreConfig(name_rules=compiled_rules, vendor_patterns=vendor_patterns)
+    return DeviceFilterConfig(name_rules=compiled_rules, vendor_patterns=vendor_patterns)
 
 
-def should_ignore_device(name: str, rules: List[DeviceIgnoreRule]) -> bool:
+def load_device_ignore_rules(config_path: Path) -> DeviceFilterConfig:
+    return load_device_rules(config_path)
+
+
+def matches_device_rules(name: str, rules: List[DeviceRule]) -> bool:
     if not rules:
         return False
 
@@ -138,7 +142,7 @@ def should_ignore_device(name: str, rules: List[DeviceIgnoreRule]) -> bool:
     return False
 
 
-def should_ignore_vendor(vendor: str, patterns: List[str]) -> bool:
+def matches_vendor_patterns(vendor: str, patterns: List[str]) -> bool:
     if not patterns:
         return False
 
@@ -607,6 +611,8 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
     ignore_rules_path = repo_root / "configs" / "device_ignore.yml"
 
     ignore_config = load_device_ignore_rules(ignore_rules_path)
+    network_rules_path = repo_root / "configs" / "device_network.yml"
+    network_config = load_device_rules(network_rules_path)
 
     if not dhcp_path.exists():
         print("❌ Файл data/interim/dhcp.csv не знайдено")
@@ -640,9 +646,11 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
     true_path = result_dir / "dhcp-true.csv"
     false_path = result_dir / "dhcp-false.csv"
     ignore_path = result_dir / "dhcp-ignore.csv"
+    network_path = result_dir / "dhcp-network.csv"
     random_path = result_dir / "dhcp-random.csv"
 
     ignored_count = 0
+    network_count = 0
     random_count = 0
 
     try:
@@ -656,15 +664,18 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
             with true_path.open("w", encoding="utf-8", newline="") as true_handle, \
                 false_path.open("w", encoding="utf-8", newline="") as false_handle, \
                 ignore_path.open("w", encoding="utf-8", newline="") as ignore_handle, \
+                network_path.open("w", encoding="utf-8", newline="") as network_handle, \
                 random_path.open("w", encoding="utf-8", newline="") as random_handle:
 
                 writer_true = csv.DictWriter(true_handle, fieldnames=headers)
                 writer_false = csv.DictWriter(false_handle, fieldnames=headers)
                 writer_ignore = csv.DictWriter(ignore_handle, fieldnames=headers)
+                writer_network = csv.DictWriter(network_handle, fieldnames=headers)
                 writer_random = csv.DictWriter(random_handle, fieldnames=headers)
                 writer_true.writeheader()
                 writer_false.writeheader()
                 writer_ignore.writeheader()
+                writer_network.writeheader()
                 writer_random.writeheader()
 
                 match_count = 0
@@ -683,15 +694,25 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
                         continue
 
                     name_value = (row.get("name") or "").strip()
-                    if should_ignore_device(name_value, ignore_config.name_rules):
+                    if matches_device_rules(name_value, ignore_config.name_rules):
                         ignored_count += 1
                         writer_ignore.writerow(row)
                         continue
 
                     vendor_value = (row.get("vendor") or "").strip()
-                    if should_ignore_vendor(vendor_value, ignore_config.vendor_patterns):
+                    if matches_vendor_patterns(vendor_value, ignore_config.vendor_patterns):
                         ignored_count += 1
                         writer_ignore.writerow(row)
+                        continue
+
+                    if matches_device_rules(name_value, network_config.name_rules):
+                        network_count += 1
+                        writer_network.writerow(row)
+                        continue
+
+                    if matches_vendor_patterns(vendor_value, network_config.vendor_patterns):
+                        network_count += 1
+                        writer_network.writerow(row)
                         continue
 
                     mac_value = (row.get("mac") or "").strip().upper()
@@ -708,10 +729,11 @@ def run_compare_dhcp_and_mac(repo_root: Path) -> int:
     print(f"🔹 Випадкових MAC-адрес виявлено: {random_count}")
     print("📁 Збережено до data/result/dhcp-random.csv")
     print(f"🟡 Ігноровано за правилами: {ignored_count}")
+    print(f"🔷 Віднесено до мережевих пристроїв: {network_count}")
     print(f"✅ DHCP збігів: {match_count}")
     print(f"⚠️ DHCP без збігів: {miss_count}")
     print(
-        "📁 Результати збережено до data/result/dhcp-true.csv, data/result/dhcp-false.csv та data/result/dhcp-ignore.csv"
+        "📁 Результати збережено до data/result/dhcp-true.csv, data/result/dhcp-false.csv, data/result/dhcp-ignore.csv та data/result/dhcp-network.csv"
     )
 
     return 0
