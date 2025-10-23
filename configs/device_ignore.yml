@@ -1,23 +1,38 @@
 rules:
 - mode: prefix
   patterns:
-    - "redmi-"
+    - "air-"
+    - "googletv"
+    - "miwifi"
+    - "smart"
     - "tv-"
 
 - mode: contains
   patterns:
+    - "canon"
     - "epson"
+    - "huawei"
+    - "galaxy"
+    - "ipad"
     - "iphone"
+    - "lgwebostv"
+    - "pixe"
+    - "poco"
+    - "redmi"
     - "samsung"
     - "unknown"
 
 - mode: regex
   patterns:
     - "^[gisy][0-9]{9}$"
+    - '^[AMS]\d{2}-'
+    - '-[AMS]\d{2}$'
 
 - mode: vendor
   patterns:
+    - "OnePlus Technology (Shenzhen) Co., Ltd"
     - "Routerboard.com"
     - "SHENZHEN YUNJI INTELLIGENT TECHNOLOGY CO.,LTD"
     - "TP-Link Systems Inc"
     - "Ubiquiti Inc"
+    - "Xiaomi Communications Co Ltd"
