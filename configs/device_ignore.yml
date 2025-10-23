@@ -18,8 +18,10 @@ rules:
     - "lgwebostv"
     - "pixe"
     - "poco"
+    - "realme"
     - "redmi"
     - "samsung"
+    - "steamdeck"
     - "unknown"
 
 - mode: regex
@@ -30,9 +32,13 @@ rules:
 
 - mode: vendor
   patterns:
+    - "Apple, Inc."
+    - "Motorola Mobility LLC, a Lenovo Company"
     - "OnePlus Technology (Shenzhen) Co., Ltd"
     - "Routerboard.com"
+    - "Samsung Electronics Co.,Ltd"
     - "SHENZHEN YUNJI INTELLIGENT TECHNOLOGY CO.,LTD"
     - "TP-Link Systems Inc"
+    - "TP-LINK TECHNOLOGIES CO.,LTD."
     - "Ubiquiti Inc"
     - "Xiaomi Communications Co Ltd"
