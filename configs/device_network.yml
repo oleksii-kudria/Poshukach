@@ -6,4 +6,4 @@ rules:
 - mode: vendor
   patterns:
     - "Beijing Xiaomi Mobile Software Co., Ltd"
-    # - "Routerboard.com"
+    - "Routerboard.com"
