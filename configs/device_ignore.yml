@@ -33,6 +33,7 @@ rules:
 - mode: vendor
   patterns:
     - "Apple, Inc."
+    - "Cisco Systems, Inc"
     - "Motorola Mobility LLC, a Lenovo Company"
     - "OnePlus Technology (Shenzhen) Co., Ltd"
     - "Routerboard.com"
