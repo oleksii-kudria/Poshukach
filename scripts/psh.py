@@ -44,6 +44,8 @@ import yaml
 
 MAC_PATTERN = re.compile(r"""(?i)\b([0-9a-f]{2}([-:]))(?:[0-9a-f]{2}\2){4}[0-9a-f]{2}\b""")
 
+CONSOLE_SEPARATOR = "--------------------------------------------"
+
 DeviceRule = Tuple[str, List[object]]
 
 
@@ -695,7 +697,11 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
             )
             written_rows += 1
 
-    print(f"✅ Записано рядків до data/interim/dhcp.csv: {written_rows}")
+    print(
+        "✅ Виявлено та записано унікальних MAC-адрес до data/interim/dhcp.csv: "
+        f"{written_rows}"
+    )
+    print(CONSOLE_SEPARATOR)
     return 0
 
 
@@ -747,8 +753,9 @@ def run_mac_scan(repo_root: Path, args: argparse.Namespace | None = None) -> int
         for mac in sorted(mac_sources.keys()):
             writer.writerow([mac, mac_sources[mac]])
 
-    print(f"✅ Унікальних MAC-адрес: {len(mac_sources)}")
+    print(f"✅ Унікальних MAC-адрес зафіксованих в AV: {len(mac_sources)}")
     print("✅ Результат збережено у data/interim/mac.csv")
+    print(CONSOLE_SEPARATOR)
     return 0
 
 
@@ -774,6 +781,7 @@ def run_get_oui(repo_root: Path, args: argparse.Namespace | None = None) -> int:
         return 1
 
     print("✅ OUI-довідник завантажено: data/cache/oui.csv")
+    print(CONSOLE_SEPARATOR)
     return 0
 
 
@@ -943,11 +951,12 @@ def run_compare_dhcp_and_mac(repo_root: Path, args: argparse.Namespace | None = 
     print(f"🔹 Випадкових MAC-адрес виявлено: {random_count}")
     print("📁 Збережено до data/result/dhcp-random.csv")
     print(f"🟡 Ігноровано за правилами: {ignored_count}")
-    print(f"✅ DHCP збігів: {match_count}")
-    print(f"⚠️ DHCP без збігів: {miss_count}")
+    print(f"✅ Виявлено пристроїв з АВПЗ: {match_count}")
+    print(f"⚠️ Виявлено пристроїв без АВПЗ: {miss_count}")
     print(
         "📁 Результати збережено до data/result/dhcp-true.csv, data/result/dhcp-false.csv та data/result/dhcp-ignore.csv"
     )
+    print(CONSOLE_SEPARATOR)
 
     move_name_duplicates(result_dir)
 
@@ -964,6 +973,8 @@ def run_compare_dhcp_and_mac(repo_root: Path, args: argparse.Namespace | None = 
 
     print(f"🔷 Віднесено до мережевих пристроїв: {network_count}")
     print("📁 Збережено до data/result/dhcp-network.csv")
+    print(CONSOLE_SEPARATOR)
+    print("✅ Дані успішно оброблено та збережено у data/result/")
 
     return 0
 
@@ -1159,6 +1170,7 @@ def run_generate_reports(repo_root: Path, args: argparse.Namespace | None = None
         print(f"📄 Створено звіт: {report_path.relative_to(repo_root)}")
 
     print(f"✅ Загалом сформовано звітів: {report_count}")
+    print(CONSOLE_SEPARATOR)
     return 0
 
 
