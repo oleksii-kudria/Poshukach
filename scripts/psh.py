@@ -153,6 +153,60 @@ def matches_vendor_patterns(vendor: str, patterns: List[str]) -> bool:
     return any(pattern in lowered for pattern in patterns)
 
 
+def cleanup_result_directory(result_dir: Path) -> None:
+    print("🧹 Cleaning up result directory...")
+
+    try:
+        result_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"⚠️ Неможливо створити директорію data/result/: {exc}")
+        return
+
+    csv_files = list(result_dir.glob("*.csv"))
+    files_to_remove: List[Path] = []
+    skipped_count = 0
+
+    for file_path in csv_files:
+        if file_path.name.endswith(".example.csv"):
+            skipped_count += 1
+            continue
+        files_to_remove.append(file_path)
+
+    if not files_to_remove:
+        if skipped_count:
+            print(f"   • Пропущено {skipped_count} файл(и) (*.example.csv)")
+        print("🧹 Немає файлів для очищення.")
+        return
+
+    deleted_count = 0
+    failed_files: List[Tuple[Path, Exception]] = []
+
+    for file_path in files_to_remove:
+        try:
+            file_path.unlink()
+            deleted_count += 1
+        except OSError as exc:
+            failed_files.append((file_path, exc))
+
+    if deleted_count:
+        print(f"   • Видалено {deleted_count} файлів з data/result/")
+
+    if skipped_count:
+        print(f"   • Пропущено {skipped_count} файл(и) (*.example.csv)")
+
+    for file_path, error in failed_files:
+        try:
+            relative_path = file_path.relative_to(result_dir)
+        except ValueError:
+            relative_path = file_path
+        print(f"⚠️ Не вдалося видалити data/result/{relative_path}: {error}")
+
+    if failed_files:
+        print("⚠️ Очищення директорії завершено з попередженнями.")
+    else:
+        print("✅ Директорія очищена успішно.")
+
+
 def normalise_device_name(value: str) -> str:
     value = (value or "").strip()
     if value:
@@ -777,6 +831,8 @@ def write_network_results(
 def run_compare_dhcp_and_mac(repo_root: Path, args: argparse.Namespace | None = None) -> int:
     interim_dir = repo_root / "data" / "interim"
     result_dir = repo_root / "data" / "result"
+
+    cleanup_result_directory(result_dir)
 
     mac_path = interim_dir / "mac.csv"
     dhcp_path = interim_dir / "dhcp.csv"
