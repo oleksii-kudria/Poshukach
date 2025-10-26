@@ -106,6 +106,22 @@ class DeviceFilterConfig:
     label: str = ""
 
 
+@dataclass
+class VendorRuleStats:
+    config_label: str
+    applied: int = 0
+    skipped_by_except: int = 0
+    skipped_by_require: int = 0
+
+    def summary_line(self) -> str:
+        skipped_total = self.skipped_by_except + self.skipped_by_require
+        return (
+            f"🔧 Підсумок правил vendor ({self.config_label}): "
+            f"застосовано={self.applied}, пропущено={skipped_total} "
+            f"(except={self.skipped_by_except}, require={self.skipped_by_require})"
+        )
+
+
 def ensure_string_list(value: object, *, config_label: str) -> List[str]:
     if value is None:
         return []
@@ -350,7 +366,8 @@ def device_matches_vendor_rules(
     vendor_rules: List[VendorRule],
     *,
     config_label: str,
-    log: bool = True,
+    stats: VendorRuleStats | None = None,
+    log: bool = False,
 ) -> bool:
     vendor_value = (row.get("vendor") or "").strip()
 
@@ -360,6 +377,8 @@ def device_matches_vendor_rules(
 
         except_result = except_hit(row, rule.except_)
         if except_result.hit:
+            if stats is not None:
+                stats.skipped_by_except += 1
             if log:
                 log_vendor_rule_event(
                     action="skipped by except",
@@ -372,6 +391,8 @@ def device_matches_vendor_rules(
 
         require_result = require_hit(row, rule.require)
         if not require_result.hit:
+            if stats is not None and require_result.available:
+                stats.skipped_by_require += 1
             if log and require_result.available:
                 log_vendor_rule_event(
                     action="skipped (require not satisfied)",
@@ -390,6 +411,8 @@ def device_matches_vendor_rules(
                 require_result=require_result,
                 except_result=except_result,
             )
+        if stats is not None:
+            stats.applied += 1
         return True
 
     return False
@@ -1031,6 +1054,7 @@ def write_network_results(
     network_path: Path,
     network_config: DeviceFilterConfig,
     include_randomized: bool,
+    vendor_stats: VendorRuleStats | None = None,
 ) -> tuple[int, bool]:
     try:
         with dhcp_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -1046,6 +1070,7 @@ def write_network_results(
                     writer_network.writeheader()
 
                     network_count = 0
+                    config_label = network_config.label or "device_network.yml"
 
                     for row in reader:
                         if row is None:
@@ -1060,7 +1085,8 @@ def write_network_results(
                         if matches_device_rules(name_value, network_config.name_rules) or device_matches_vendor_rules(
                             row,
                             network_config.vendor_rules,
-                            config_label=network_config.label or "device_network.yml",
+                            config_label=config_label,
+                            stats=vendor_stats,
                         ):
                             writer_network.writerow(row)
                             network_count += 1
@@ -1090,6 +1116,16 @@ def run_compare_dhcp_and_mac(repo_root: Path, args: argparse.Namespace | None = 
     network_rules_path = repo_root / "configs" / "device_network.yml"
     network_config = load_device_rules(network_rules_path)
     include_randomized_network = bool(getattr(args, "include_randomized_network", False))
+    ignore_stats = (
+        VendorRuleStats(ignore_config.label or "device_ignore.yml")
+        if ignore_config.vendor_rules
+        else None
+    )
+    network_stats = (
+        VendorRuleStats(network_config.label or "device_network.yml")
+        if network_config.vendor_rules
+        else None
+    )
 
     if not dhcp_path.exists():
         print("❌ Файл data/interim/dhcp.csv не знайдено")
@@ -1175,6 +1211,7 @@ def run_compare_dhcp_and_mac(repo_root: Path, args: argparse.Namespace | None = 
                         row,
                         ignore_config.vendor_rules,
                         config_label=ignore_config.label or "device_ignore.yml",
+                        stats=ignore_stats,
                     ):
                         ignored_count += 1
                         writer_ignore.writerow(row)
@@ -1209,6 +1246,7 @@ def run_compare_dhcp_and_mac(repo_root: Path, args: argparse.Namespace | None = 
         network_path=network_path,
         network_config=network_config,
         include_randomized=include_randomized_network,
+        vendor_stats=network_stats,
     )
 
     if not network_success:
@@ -1217,6 +1255,12 @@ def run_compare_dhcp_and_mac(repo_root: Path, args: argparse.Namespace | None = 
     print(f"🔷 Віднесено до мережевих пристроїв: {network_count}")
     print("📁 Збережено до data/result/dhcp-network.csv")
     print(CONSOLE_SEPARATOR)
+    if network_stats is not None:
+        print(network_stats.summary_line())
+    if ignore_stats is not None:
+        print(ignore_stats.summary_line())
+    if network_stats is not None or ignore_stats is not None:
+        print("✅ Обробку правил vendor завершено успішно.")
     print("✅ Дані успішно оброблено та збережено у data/result/")
 
     return 0
