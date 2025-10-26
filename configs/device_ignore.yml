@@ -39,7 +39,31 @@ rules:
     - "Routerboard.com"
     - "Samsung Electronics Co.,Ltd"
     - "SHENZHEN YUNJI INTELLIGENT TECHNOLOGY CO.,LTD"
-    - "TP-Link Systems Inc"
-    - "TP-LINK TECHNOLOGIES CO.,LTD."
     - "Ubiquiti Inc"
     - "Xiaomi Communications Co Ltd"
+
+- mode: vendor
+  patterns:
+    - "TP-Link Systems Inc"
+  require:
+    name_contains: ["Archer", "Deco", "TL-", "AP", "Router", "Access Point"]
+    vendor_class_contains: ["router", "ap", "openwrt", "tp-link"]
+    vendor_class_regex: ["^(tp|router|ap|openwrt)"]
+    oui_prefixes: []
+  except:
+    name_regex: ["^(DESKTOP|LAPTOP|PC|WIN-|DESKTOP-)", "(?i)MacBook|iPhone|Android"]
+    name_contains: ["DESKTOP", "LAPTOP"]
+    oui_prefixes: ["3C:64:CF", "20:23:51"]
+
+- mode: vendor
+  patterns:
+    - "TP-LINK TECHNOLOGIES CO.,LTD."
+  require:
+    name_contains: ["Archer", "Deco", "TL-", "AP", "Router", "Access Point"]
+    vendor_class_contains: ["router", "ap", "openwrt", "tp-link"]
+    vendor_class_regex: ["^(tp|router|ap|openwrt)"]
+    oui_prefixes: []
+  except:
+    name_regex: ["^(DESKTOP|LAPTOP|PC|WIN-|DESKTOP-)", "(?i)MacBook|iPhone|Android"]
+    name_contains: ["DESKTOP", "LAPTOP"]
+    oui_prefixes: ["3C:64:CF", "20:23:51"]
