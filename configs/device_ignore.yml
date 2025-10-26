@@ -47,11 +47,11 @@ rules:
   patterns:
     - "TP-Link Systems Inc"
   require:
-    name_contains: ["Archer", "TL-", "TLWR"]
+    # name_contains: ["Archer", "TL-", "TLWR"]
     # vendor_class_contains: ["router", "ap", "openwrt", "tp-link"]
     # vendor_class_regex: ["^(tp|router|ap|openwrt)"]
     oui_prefixes: []
   except:
-    name_regex: ["^(DESKTOP|LAPTOP|PC|WIN-|DESKTOP-)", "(?i)MacBook|iPhone|Android"]
+    name_regex: ["^(WS-|DESKTOP|LAPTOP|PC|WIN-|DESKTOP-)", "(?i)MacBook|iPhone|Android"]
     # name_contains: ["DESKTOP", "LAPTOP"]
-    oui_prefixes: ["3C:64:CF"]
+    # oui_prefixes: ["3C:64:CF"]
