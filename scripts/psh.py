@@ -38,7 +38,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import DefaultDict, Dict, Iterable, List, Tuple
+from typing import DefaultDict, Dict, Iterable, List, Pattern, Tuple
 
 import yaml
 
@@ -49,15 +49,125 @@ CONSOLE_SEPARATOR = "--------------------------------------------"
 DeviceRule = Tuple[str, List[object]]
 
 
+def extract_oui_prefix(mac: str) -> str:
+    normalised = normalise_oui(mac or "")
+    if len(normalised) < 6:
+        return ""
+    prefix = normalised[:6]
+    return ":".join(prefix[i : i + 2] for i in range(0, 6, 2))
+
+
+@dataclass
+class MatchCheckResult:
+    hit: bool
+    detail: str
+    available: bool
+
+
+@dataclass
+class VendorRequireConfig:
+    name_contains: List[str] = field(default_factory=list)
+    vendor_class_contains: List[str] = field(default_factory=list)
+    vendor_class_regex: List[Pattern[str]] = field(default_factory=list)
+    oui_prefixes: List[str] = field(default_factory=list)
+
+    def has_rules(self) -> bool:
+        return any(
+            (
+                self.name_contains,
+                self.vendor_class_contains,
+                self.vendor_class_regex,
+                self.oui_prefixes,
+            )
+        )
+
+
+@dataclass
+class VendorExceptConfig:
+    name_contains: List[str] = field(default_factory=list)
+    name_regex: List[Pattern[str]] = field(default_factory=list)
+    oui_prefixes: List[str] = field(default_factory=list)
+
+    def has_rules(self) -> bool:
+        return any((self.name_contains, self.name_regex, self.oui_prefixes))
+
+
+@dataclass
+class VendorRule:
+    patterns: List[str]
+    require: VendorRequireConfig | None = None
+    except_: VendorExceptConfig | None = None
+
+
 @dataclass
 class DeviceFilterConfig:
     name_rules: List[DeviceRule] = field(default_factory=list)
-    vendor_patterns: List[str] = field(default_factory=list)
+    vendor_rules: List[VendorRule] = field(default_factory=list)
+    label: str = ""
+
+
+def ensure_string_list(value: object, *, config_label: str) -> List[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
+    return [item for item in value if item]
+
+
+def parse_vendor_require_config(value: object, config_label: str) -> VendorRequireConfig | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
+
+    require = VendorRequireConfig()
+
+    name_contains = ensure_string_list(value.get("name_contains"), config_label=config_label)
+    require.name_contains = [item.lower() for item in name_contains]
+
+    vendor_class_contains = ensure_string_list(value.get("vendor_class_contains"), config_label=config_label)
+    require.vendor_class_contains = [item.lower() for item in vendor_class_contains]
+
+    vendor_class_regex_raw = ensure_string_list(value.get("vendor_class_regex"), config_label=config_label)
+    for pattern in vendor_class_regex_raw:
+        try:
+            require.vendor_class_regex.append(re.compile(pattern, re.IGNORECASE))
+        except re.error as exc:
+            raise ValueError(f"⚠️ Некоректний regex у {config_label}: {exc}") from exc
+
+    oui_prefixes = ensure_string_list(value.get("oui_prefixes"), config_label=config_label)
+    require.oui_prefixes = [item.upper() for item in oui_prefixes]
+
+    return require if require.has_rules() else None
+
+
+def parse_vendor_except_config(value: object, config_label: str) -> VendorExceptConfig | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
+
+    except_config = VendorExceptConfig()
+
+    name_contains = ensure_string_list(value.get("name_contains"), config_label=config_label)
+    except_config.name_contains = [item.lower() for item in name_contains]
+
+    name_regex_raw = ensure_string_list(value.get("name_regex"), config_label=config_label)
+    for pattern in name_regex_raw:
+        try:
+            except_config.name_regex.append(re.compile(pattern, re.IGNORECASE))
+        except re.error as exc:
+            raise ValueError(f"⚠️ Некоректний regex у {config_label}: {exc}") from exc
+
+    oui_prefixes = ensure_string_list(value.get("oui_prefixes"), config_label=config_label)
+    except_config.oui_prefixes = [item.upper() for item in oui_prefixes]
+
+    return except_config if except_config.has_rules() else None
 
 
 def load_device_rules(config_path: Path) -> DeviceFilterConfig:
     if not config_path.exists():
-        return DeviceFilterConfig()
+        return DeviceFilterConfig(label=config_path.name)
 
     config_label = config_path.as_posix()
 
@@ -66,14 +176,14 @@ def load_device_rules(config_path: Path) -> DeviceFilterConfig:
             data = yaml.safe_load(handle) or {}
     except OSError as exc:
         print(f"⚠️ Неможливо прочитати {config_label}: {exc}")
-        return DeviceFilterConfig()
+        return DeviceFilterConfig(label=config_path.name)
     except yaml.YAMLError as exc:
         print(f"⚠️ Неможливо розпарсити {config_label}: {exc}")
-        return DeviceFilterConfig()
+        return DeviceFilterConfig(label=config_path.name)
 
     if not isinstance(data, dict):
         print(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
-        return DeviceFilterConfig()
+        return DeviceFilterConfig(label=config_path.name)
 
     rules_data = data.get("rules")
     if rules_data is None:
@@ -84,24 +194,24 @@ def load_device_rules(config_path: Path) -> DeviceFilterConfig:
         return DeviceFilterConfig()
 
     compiled_rules: List[DeviceRule] = []
-    vendor_patterns: List[str] = []
+    vendor_rules: List[VendorRule] = []
     valid_modes = {"prefix", "contains", "regex", "vendor"}
 
     for entry in rules_data:
         if not isinstance(entry, dict):
             print(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
-            return DeviceFilterConfig()
+            return DeviceFilterConfig(label=config_path.name)
 
         mode = entry.get("mode")
         patterns = entry.get("patterns")
 
         if mode not in valid_modes or not isinstance(patterns, list):
             print(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
-            return DeviceFilterConfig()
+            return DeviceFilterConfig(label=config_path.name)
 
         if not all(isinstance(item, str) for item in patterns):
             print(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
-            return DeviceFilterConfig()
+            return DeviceFilterConfig(label=config_path.name)
 
         if mode in {"prefix", "contains"}:
             compiled_rules.append((mode, [pattern.lower() for pattern in patterns]))
@@ -110,13 +220,23 @@ def load_device_rules(config_path: Path) -> DeviceFilterConfig:
                 compiled = [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
             except re.error as exc:
                 print(f"⚠️ Некоректний regex у {config_label}: {exc}")
-                return DeviceFilterConfig()
+                return DeviceFilterConfig(label=config_path.name)
 
             compiled_rules.append((mode, compiled))
         else:  # mode == "vendor"
-            vendor_patterns.extend(pattern.lower() for pattern in patterns)
+            try:
+                vendor_rules.append(
+                    VendorRule(
+                        patterns=[pattern.lower() for pattern in patterns],
+                        require=parse_vendor_require_config(entry.get("require"), config_label),
+                        except_=parse_vendor_except_config(entry.get("except"), config_label),
+                    )
+                )
+            except ValueError as exc:
+                print(exc)
+                return DeviceFilterConfig(label=config_path.name)
 
-    return DeviceFilterConfig(name_rules=compiled_rules, vendor_patterns=vendor_patterns)
+    return DeviceFilterConfig(name_rules=compiled_rules, vendor_rules=vendor_rules, label=config_path.name)
 
 
 def load_device_ignore_rules(config_path: Path) -> DeviceFilterConfig:
@@ -145,7 +265,7 @@ def matches_device_rules(name: str, rules: List[DeviceRule]) -> bool:
     return False
 
 
-def matches_vendor_patterns(vendor: str, patterns: List[str]) -> bool:
+def match_vendor_patterns(vendor: str, patterns: List[str]) -> bool:
     if not patterns:
         return False
 
@@ -153,6 +273,126 @@ def matches_vendor_patterns(vendor: str, patterns: List[str]) -> bool:
     lowered = value.lower()
 
     return any(pattern in lowered for pattern in patterns)
+
+
+def require_hit(row: Dict[str, str], require_cfg: VendorRequireConfig | None) -> MatchCheckResult:
+    if require_cfg is None or not require_cfg.has_rules():
+        return MatchCheckResult(True, "n/a", False)
+
+    name_value = (row.get("name") or "").strip()
+    lowered_name = name_value.lower()
+    for pattern in require_cfg.name_contains:
+        if pattern and pattern in lowered_name:
+            return MatchCheckResult(True, f'name_contains → "{pattern}"', True)
+
+    vendor_class_value = (row.get("vendorClass") or "").strip()
+    lowered_vendor_class = vendor_class_value.lower()
+    for pattern in require_cfg.vendor_class_contains:
+        if pattern and pattern in lowered_vendor_class:
+            return MatchCheckResult(True, f'vendor_class_contains → "{pattern}"', True)
+
+    for compiled in require_cfg.vendor_class_regex:
+        if compiled.search(vendor_class_value):
+            return MatchCheckResult(True, f'vendor_class_regex → "{compiled.pattern}"', True)
+
+    mac_value = (row.get("mac") or "").strip()
+    prefix = extract_oui_prefix(mac_value)
+    for pattern in require_cfg.oui_prefixes:
+        if pattern and prefix == pattern:
+            return MatchCheckResult(True, f'oui_prefixes → "{pattern}"', True)
+
+    return MatchCheckResult(False, "none", True)
+
+
+def except_hit(row: Dict[str, str], except_cfg: VendorExceptConfig | None) -> MatchCheckResult:
+    if except_cfg is None or not except_cfg.has_rules():
+        return MatchCheckResult(False, "n/a", False)
+
+    name_value = (row.get("name") or "").strip()
+    lowered_name = name_value.lower()
+    for pattern in except_cfg.name_contains:
+        if pattern and pattern in lowered_name:
+            return MatchCheckResult(True, f'name_contains → "{pattern}"', True)
+
+    for compiled in except_cfg.name_regex:
+        if compiled.search(name_value):
+            return MatchCheckResult(True, f'name_regex → "{compiled.pattern}"', True)
+
+    mac_value = (row.get("mac") or "").strip()
+    prefix = extract_oui_prefix(mac_value)
+    for pattern in except_cfg.oui_prefixes:
+        if pattern and prefix == pattern:
+            return MatchCheckResult(True, f'oui_prefixes → "{pattern}"', True)
+
+    return MatchCheckResult(False, "none", True)
+
+
+def log_vendor_rule_event(
+    *,
+    action: str,
+    config_label: str,
+    vendor_value: str,
+    require_result: MatchCheckResult,
+    except_result: MatchCheckResult,
+) -> None:
+    suffix = " with require/except" if (require_result.available or except_result.available) else ""
+
+    print(f"🔧 vendor-rule: {action}{suffix} ({config_label})")
+    print(f"   • matched vendor: {vendor_value or '<empty>'}")
+    require_detail = require_result.detail if require_result.available else "n/a"
+    except_detail = except_result.detail if except_result.available else "n/a"
+    print(f"   • require hit: {require_detail}")
+    print(f"   • except hit: {except_detail}")
+
+
+def device_matches_vendor_rules(
+    row: Dict[str, str],
+    vendor_rules: List[VendorRule],
+    *,
+    config_label: str,
+    log: bool = True,
+) -> bool:
+    vendor_value = (row.get("vendor") or "").strip()
+
+    for rule in vendor_rules:
+        if not match_vendor_patterns(vendor_value, rule.patterns):
+            continue
+
+        except_result = except_hit(row, rule.except_)
+        if except_result.hit:
+            if log:
+                log_vendor_rule_event(
+                    action="skipped by except",
+                    config_label=config_label,
+                    vendor_value=vendor_value,
+                    require_result=require_hit(row, rule.require),
+                    except_result=except_result,
+                )
+            continue
+
+        require_result = require_hit(row, rule.require)
+        if not require_result.hit:
+            if log and require_result.available:
+                log_vendor_rule_event(
+                    action="skipped (require not satisfied)",
+                    config_label=config_label,
+                    vendor_value=vendor_value,
+                    require_result=require_result,
+                    except_result=except_result,
+                )
+            continue
+
+        if log:
+            log_vendor_rule_event(
+                action="applied",
+                config_label=config_label,
+                vendor_value=vendor_value,
+                require_result=require_result,
+                except_result=except_result,
+            )
+        return True
+
+    return False
 
 
 def cleanup_result_directory(result_dir: Path) -> None:
@@ -816,11 +1056,11 @@ def write_network_results(
                             continue
 
                         name_value = (row.get("name") or "").strip()
-                        vendor_value = (row.get("vendor") or "").strip()
 
-                        if matches_device_rules(name_value, network_config.name_rules) or matches_vendor_patterns(
-                            vendor_value,
-                            network_config.vendor_patterns,
+                        if matches_device_rules(name_value, network_config.name_rules) or device_matches_vendor_rules(
+                            row,
+                            network_config.vendor_rules,
+                            config_label=network_config.label or "device_network.yml",
                         ):
                             writer_network.writerow(row)
                             network_count += 1
@@ -931,8 +1171,11 @@ def run_compare_dhcp_and_mac(repo_root: Path, args: argparse.Namespace | None = 
                         writer_ignore.writerow(row)
                         continue
 
-                    vendor_value = (row.get("vendor") or "").strip()
-                    if matches_vendor_patterns(vendor_value, ignore_config.vendor_patterns):
+                    if device_matches_vendor_rules(
+                        row,
+                        ignore_config.vendor_rules,
+                        config_label=ignore_config.label or "device_ignore.yml",
+                    ):
                         ignored_count += 1
                         writer_ignore.writerow(row)
                         continue
