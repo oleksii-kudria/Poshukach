@@ -59,6 +59,13 @@ CONSOLE_SEPARATOR = "--------------------------------------------"
 DeviceRule = Tuple[str, List[object]]
 
 
+@dataclass
+class VendorPattern:
+    value: str
+    is_regex: bool = False
+    compiled: Pattern[str] | None = None
+
+
 def extract_oui_prefix(mac: str) -> str:
     normalised = normalise_oui(mac or "")
     if len(normalised) < 6:
@@ -104,7 +111,7 @@ class VendorExceptConfig:
 
 @dataclass
 class VendorRule:
-    patterns: List[str]
+    patterns: List[VendorPattern]
     require: VendorRequireConfig | None = None
     except_: VendorExceptConfig | None = None
 
@@ -138,6 +145,29 @@ def ensure_string_list(value: object, *, config_label: str) -> List[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"⚠️ Некоректна структура {config_label}, фільтрацію вимкнено")
     return [item for item in value if item]
+
+
+def is_vendor_pattern_regex(pattern: str) -> bool:
+    if "(?" in pattern:
+        return True
+
+    regex_specials = set("^$*+?{}[]|\\")
+    return any(char in regex_specials for char in pattern)
+
+
+def build_vendor_pattern(pattern: str, *, config_label: str) -> VendorPattern:
+    cleaned = (pattern or "").strip()
+    if not cleaned:
+        return VendorPattern(value="")
+
+    if is_vendor_pattern_regex(cleaned):
+        try:
+            compiled = re.compile(cleaned, re.IGNORECASE)
+        except re.error as exc:
+            raise ValueError(f"⚠️ Некоректний regex у {config_label}: {exc}") from exc
+        return VendorPattern(value=cleaned, is_regex=True, compiled=compiled)
+
+    return VendorPattern(value=normalize_vendor(cleaned))
 
 
 def parse_vendor_require_config(value: object, config_label: str) -> VendorRequireConfig | None:
@@ -253,7 +283,10 @@ def load_device_rules(config_path: Path) -> DeviceFilterConfig:
             try:
                 vendor_rules.append(
                     VendorRule(
-                        patterns=[pattern.lower() for pattern in patterns],
+                        patterns=[
+                            build_vendor_pattern(pattern, config_label=config_label)
+                            for pattern in patterns
+                        ],
                         require=parse_vendor_require_config(entry.get("require"), config_label),
                         except_=parse_vendor_except_config(entry.get("except"), config_label),
                     )
@@ -291,14 +324,30 @@ def matches_device_rules(name: str, rules: List[DeviceRule]) -> bool:
     return False
 
 
-def match_vendor_patterns(vendor: str, patterns: List[str]) -> bool:
+def normalize_vendor(value: str) -> str:
+    value = (value or "").strip()
+    if value:
+        value = re.sub(r"[\s]+", " ", value)
+        value = re.sub(r"[\s,.;]+$", "", value)
+    return (value or "").lower()
+
+
+def match_vendor_patterns(vendor: str, patterns: List[VendorPattern]) -> bool:
     if not patterns:
         return False
 
-    value = vendor or ""
-    lowered = value.lower()
+    vendor_value = vendor or ""
+    vendor_norm = normalize_vendor(vendor_value)
 
-    return any(pattern in lowered for pattern in patterns)
+    for pattern in patterns:
+        if pattern.is_regex:
+            if pattern.compiled and pattern.compiled.search(vendor_value):
+                return True
+        else:
+            if pattern.value and pattern.value in vendor_norm:
+                return True
+
+    return False
 
 
 def require_hit(row: Dict[str, str], require_cfg: VendorRequireConfig | None) -> MatchCheckResult:
@@ -1358,11 +1407,12 @@ def generate_rds_result_files(repo_root: Path) -> int:
     false_path = result_dir / "rds-false.csv"
 
     ignored_count = 0
-    network_count = 0
     random_count = 0
     match_count = 0
     miss_count = 0
     total_rows = 0
+
+    all_rows: List[Dict[str, str]] = []
 
     try:
         with rds_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -1375,19 +1425,16 @@ def generate_rds_result_files(repo_root: Path) -> int:
             with (
                 random_path.open("w", encoding="utf-8", newline="") as random_handle,
                 ignore_path.open("w", encoding="utf-8", newline="") as ignore_handle,
-                network_path.open("w", encoding="utf-8", newline="") as network_handle,
                 true_path.open("w", encoding="utf-8", newline="") as true_handle,
                 false_path.open("w", encoding="utf-8", newline="") as false_handle,
             ):
                 writer_random = csv.DictWriter(random_handle, fieldnames=headers)
                 writer_ignore = csv.DictWriter(ignore_handle, fieldnames=headers)
-                writer_network = csv.DictWriter(network_handle, fieldnames=headers)
                 writer_true = csv.DictWriter(true_handle, fieldnames=headers)
                 writer_false = csv.DictWriter(false_handle, fieldnames=headers)
 
                 writer_random.writeheader()
                 writer_ignore.writeheader()
-                writer_network.writeheader()
                 writer_true.writeheader()
                 writer_false.writeheader()
 
@@ -1395,43 +1442,77 @@ def generate_rds_result_files(repo_root: Path) -> int:
                     if row is None:
                         continue
 
+                    row_copy = {key: value for key, value in row.items()}
+                    all_rows.append(row_copy)
+
                     total_rows += 1
 
-                    randomized_value = (row.get("randomized") or "").strip().lower()
+                    randomized_value = (row_copy.get("randomized") or "").strip().lower()
                     if randomized_value == "true":
-                        writer_random.writerow(row)
+                        writer_random.writerow(row_copy)
                         random_count += 1
                         continue
 
-                    name_value = (row.get("name") or "").strip()
+                    name_value = (row_copy.get("name") or "").strip()
                     if matches_device_rules(name_value, ignore_config.name_rules) or device_matches_vendor_rules(
-                        row,
+                        row_copy,
                         ignore_config.vendor_rules,
                         config_label=ignore_config.label or "device_ignore.yml",
                     ):
-                        writer_ignore.writerow(row)
+                        writer_ignore.writerow(row_copy)
                         ignored_count += 1
                         continue
 
                     if matches_device_rules(name_value, network_config.name_rules) or device_matches_vendor_rules(
-                        row,
+                        row_copy,
                         network_config.vendor_rules,
                         config_label=network_config.label or "device_network.yml",
                     ):
-                        writer_network.writerow(row)
-                        network_count += 1
+                        # Network matches are collected in a dedicated pass later
                         continue
 
-                    mac_value = (row.get("mac") or "").strip().upper()
+                    mac_value = (row_copy.get("mac") or "").strip().upper()
                     if mac_value and mac_value in mac_set:
-                        writer_true.writerow(row)
+                        writer_true.writerow(row_copy)
                         match_count += 1
                     else:
-                        writer_false.writerow(row)
+                        writer_false.writerow(row_copy)
                         miss_count += 1
     except OSError as exc:
         print(f"❌ Неможливо прочитати data/interim/rds.csv: {exc}")
         return 1
+
+    vendor_stats = VendorRuleStats(
+        config_label=network_config.label or network_rules_path.name
+    )
+    matched_network_rows: List[Dict[str, str]] = []
+
+    for row in all_rows:
+        name_value = (row.get("name") or "").strip()
+        matched_by_name = matches_device_rules(name_value, network_config.name_rules)
+        matched_by_vendor = device_matches_vendor_rules(
+            row,
+            network_config.vendor_rules,
+            config_label=network_config.label or "device_network.yml",
+            stats=vendor_stats,
+        )
+
+        if matched_by_name or matched_by_vendor:
+            matched_network_rows.append(row)
+
+    try:
+        with network_path.open("w", encoding="utf-8", newline="") as network_handle:
+            writer_network = csv.DictWriter(network_handle, fieldnames=headers)
+            writer_network.writeheader()
+            writer_network.writerows(matched_network_rows)
+    except OSError as exc:
+        print(f"❌ Неможливо оновити data/result/rds-network.csv: {exc}")
+        return 1
+
+    network_count = len(matched_network_rows)
+
+    print(vendor_stats.summary_line())
+    print("✅ Обробку правил vendor завершено успішно.")
 
     print(f"✅ Виявлено RDS-записів у data/interim/rds.csv: {total_rows}")
     print(f"✅ Виявлено MAC-адрес із random: {random_count}")

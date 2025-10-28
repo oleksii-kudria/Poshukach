@@ -8,11 +8,9 @@ rules:
     - "Beijing Xiaomi Mobile Software Co., Ltd"
     - "Cisco Systems, Inc"
     - "Routerboard.com"
-    - "TP-LINK TECHNOLOGIES CO.,LTD."
+    - "(?i)^mikrotik"
+    - "(?i)^tp[- ]?link"
     - "Ubiquiti Inc"
-
-- mode: vendor
-  patterns:
-    - "TP-Link Systems Inc"
   except:
-    name_regex: ["^(WS-|DESKTOP|LAPTOP|PC|WIN-|DESKTOP-)", "(?i)MacBook|iPhone|Android"]
+    name_regex:
+      - "(?i)^desktop-"
