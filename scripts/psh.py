@@ -847,7 +847,7 @@ def parse_payload(payload: str) -> Tuple[str, str, str]:
     return ip, mac, name
 
 
-def normalise_header(header: List[str]) -> Dict[str, int]:
+def build_header_map(header: List[str]) -> Dict[str, int]:
     lowered = {column.lower(): index for index, column in enumerate(header)}
     return lowered
 
@@ -888,7 +888,7 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
             print("\nЗупинка обробки.")
             return 1
 
-        header_map = normalise_header(header)
+        header_map = build_header_map(header)
         missing = [field for field in MANDATORY_FIELDS if field.lower() not in header_map]
         if missing:
             print(f"❌ Виявлено помилки структури CSV у {rel_path}")
