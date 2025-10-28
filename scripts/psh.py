@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import re
 import sys
 import urllib.error
@@ -1021,6 +1022,105 @@ def normalise_mac(value: str) -> str:
     return value.replace("-", ":").upper()
 
 
+HEADER_NORMALISE_PATTERN = re.compile(r"[^0-9a-zа-яіїєґё]+", re.IGNORECASE)
+NAME_HEADER_VARIANTS = {
+    "имякомпьютера",
+    "імякомпютера",
+    "computername",
+    "hostname",
+    "devicehostname",
+}
+
+
+def normalise_header(value: str) -> str:
+    cleaned = (value or "").strip().lower()
+    cleaned = cleaned.replace("'", "").replace("\u2019", "")
+    return HEADER_NORMALISE_PATTERN.sub("", cleaned)
+
+
+def detect_name_column(fieldnames: Iterable[str]) -> str | None:
+    for field in fieldnames:
+        normalised = normalise_header(field)
+        if normalised in NAME_HEADER_VARIANTS:
+            return field
+
+    for field in fieldnames:
+        normalised = normalise_header(field)
+        if "name" in normalised or "компют" in normalised or "компьют" in normalised:
+            return field
+
+    return None
+
+
+def detect_mac_columns(fieldnames: Iterable[str]) -> List[str]:
+    mac_columns = [field for field in fieldnames if "mac" in normalise_header(field)]
+    return mac_columns
+
+
+def guess_delimiter(sample: str) -> str:
+    for delimiter in (";", ",", "\t", "|"):
+        if delimiter in sample:
+            return delimiter
+    return ";"
+
+
+def normalise_device_name(value: str | None) -> str:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return "unknown"
+
+    cleaned = cleaned.replace("\"", " ").replace("'", " ").replace(",", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return "unknown"
+
+    return cleaned.upper()
+
+
+def extract_mac_records_from_row(
+    row: Dict[str, str], mac_columns: List[str], name_column: str | None
+) -> List[Tuple[str, str]]:
+    values_to_scan: List[str] = []
+
+    if mac_columns:
+        for column in mac_columns:
+            values_to_scan.append((row.get(column) or ""))
+    else:
+        for key, value in row.items():
+            if key is None:
+                continue
+            values_to_scan.append(value or "")
+
+    found_macs: List[str] = []
+    seen: set[str] = set()
+
+    for raw_value in values_to_scan:
+        if not isinstance(raw_value, str):
+            continue
+        for match in MAC_PATTERN.finditer(raw_value):
+            mac = normalise_mac(match.group(0))
+            if mac not in seen:
+                seen.add(mac)
+                found_macs.append(mac)
+
+    if not found_macs:
+        for key, value in row.items():
+            if key is None or not isinstance(value, str):
+                continue
+            for match in MAC_PATTERN.finditer(value):
+                mac = normalise_mac(match.group(0))
+                if mac not in seen:
+                    seen.add(mac)
+                    found_macs.append(mac)
+
+    if not found_macs:
+        return []
+
+    raw_name = row.get(name_column, "") if name_column else ""
+    name = normalise_device_name(raw_name)
+    return [(mac, name) for mac in found_macs]
+
+
 def iter_rds_csv_files(rds_dir: Path) -> Iterable[Path]:
     if not rds_dir.exists():
         return []
@@ -1089,6 +1189,9 @@ def run_mac_scan(repo_root: Path, args: argparse.Namespace | None = None) -> int
     files = list(iter_mac_csv_files(mac_dir))
 
     mac_sources: Dict[str, str] = {}
+    mac_names: Dict[str, Tuple[int, int, str]] = {}
+    total_records = 0
+    record_index = 0
 
     for file_path in files:
         rel_path = file_path.relative_to(repo_root)
@@ -1099,9 +1202,59 @@ def run_mac_scan(repo_root: Path, args: argparse.Namespace | None = None) -> int
             print(f"⚠️ Неможливо прочитати {rel_path}: {exc}")
             continue
 
-        for match in MAC_PATTERN.finditer(content):
-            normalised = normalise_mac(match.group(0))
-            mac_sources.setdefault(normalised, file_path.name)
+        if not content:
+            continue
+
+        sample = "\n".join(content.splitlines()[:10])
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+            reader = csv.DictReader(io.StringIO(content), dialect=dialect)
+        except csv.Error:
+            delimiter = guess_delimiter(sample)
+            reader = csv.DictReader(io.StringIO(content), delimiter=delimiter)
+
+        fieldnames = [name or "" for name in reader.fieldnames or []]
+        name_column = detect_name_column(fieldnames)
+        mac_columns = detect_mac_columns(fieldnames)
+
+        records_in_file: List[Tuple[str, str]] = []
+
+        try:
+            for row in reader:
+                if row is None:
+                    continue
+                filtered_row = {key: (value or "") for key, value in row.items() if key is not None}
+                entries = extract_mac_records_from_row(filtered_row, mac_columns, name_column)
+                if not entries:
+                    continue
+                records_in_file.extend(entries)
+        except csv.Error:
+            records_in_file = []
+
+        if not records_in_file:
+            for match in MAC_PATTERN.finditer(content):
+                normalised_mac = normalise_mac(match.group(0))
+                records_in_file.append((normalised_mac, "unknown"))
+
+        for mac, name in records_in_file:
+            record_index += 1
+            total_records += 1
+            mac_sources.setdefault(mac, file_path.name)
+
+            existing = mac_names.get(mac)
+            if name == "unknown":
+                if existing is None:
+                    mac_names[mac] = (record_index, 0, "unknown")
+                continue
+
+            candidate_length = len(name)
+            if (
+                existing is None
+                or existing[2] == "unknown"
+                or candidate_length > existing[1]
+                or (candidate_length == existing[1] and record_index >= existing[0])
+            ):
+                mac_names[mac] = (record_index, candidate_length, name)
 
     if not mac_sources:
         print("⚠️ MAC-адрес не знайдено у data/raw/av-mac/*.csv")
@@ -1111,12 +1264,16 @@ def run_mac_scan(repo_root: Path, args: argparse.Namespace | None = None) -> int
 
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["mac", "source"])
+        writer.writerow(["mac", "source", "name"])
         for mac in sorted(mac_sources.keys()):
-            writer.writerow([mac, mac_sources[mac]])
+            name_info = mac_names.get(mac)
+            resolved_name = name_info[2] if name_info else "unknown"
+            writer.writerow([mac, mac_sources[mac], resolved_name])
 
-    print(f"✅ Унікальних MAC-адрес зафіксованих в AV: {len(mac_sources)}")
-    print("✅ Результат збережено у data/interim/mac.csv")
+    print(f"✅ Виявлено AV-записів: {total_records}")
+    print(f"✅ Унікальних MAC-адрес: {len(mac_sources)}")
+    print("✅ Додано колонку name з іменами комп’ютерів")
+    print("✅ Збережено файл: data/interim/mac.csv")
     print(CONSOLE_SEPARATOR)
     return 0
 
