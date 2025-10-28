@@ -24,6 +24,15 @@ The script provides two main commands:
     normalise them to ``XX:XX:XX:XX:XX:XX`` format and write the unique
     results into ``data/interim/mac.csv`` together with the file name
     where the address was first seen.
+
+``rds``
+    Aggregate Remote Desktop Services discovery files from
+    ``data/raw/rds`` (excluding ``*.example.csv``). The command parses
+    semicolon-delimited CSV files, normalises MAC addresses and
+    aggregates entries per MAC. The resulting dataset is written to
+    ``data/interim/rds.csv`` with the same columns as the DHCP
+    aggregation: source, ip, mac, vendor, name, firstDate, lastDate,
+    firstDateEpoch, lastDateEpoch, count, randomized, dateList.
 """
 
 from __future__ import annotations
@@ -652,6 +661,36 @@ class MacAggregation:
         return [item[2] for item in sorted(self.timestamps, key=lambda data: (data[0], data[1]))]
 
 
+@dataclass
+class RdsAggregation:
+    mac: str
+    timestamps: List[int] = field(default_factory=list)
+    last_source: str = ""
+    last_ip: str = ""
+    last_name: str = "unknown"
+    first_epoch: int | None = None
+    last_epoch: int | None = None
+
+    def add_entry(self, *, source: str, ip: str, name: str, epoch: int) -> None:
+        self.timestamps.append(epoch)
+
+        if self.first_epoch is None or epoch < self.first_epoch:
+            self.first_epoch = epoch
+
+        if self.last_epoch is None or epoch > self.last_epoch:
+            self.last_epoch = epoch
+            self.last_source = source
+            self.last_ip = ip
+            self.last_name = name
+
+    @property
+    def count(self) -> int:
+        return len(self.timestamps)
+
+    def sorted_epochs(self) -> List[int]:
+        return sorted(self.timestamps)
+
+
 def iter_dhcp_csv_files(dhcp_dir: Path) -> Iterable[Path]:
     """Yield relevant CSV files from *dhcp_dir*.
 
@@ -982,6 +1021,66 @@ def normalise_mac(value: str) -> str:
     return value.replace("-", ":").upper()
 
 
+def iter_rds_csv_files(rds_dir: Path) -> Iterable[Path]:
+    if not rds_dir.exists():
+        return []
+
+    files = sorted(
+        path for path in rds_dir.glob("*.csv") if not path.name.endswith(".example.csv")
+    )
+    return files
+
+
+def parse_rds_timestamp(value: str) -> int:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("empty timestamp")
+
+    dt = datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S")
+    epoch = int((dt - datetime(1970, 1, 1)).total_seconds())
+    return epoch
+
+
+def is_ipv4(value: str) -> bool:
+    if not value:
+        return False
+
+    pattern = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+    if not pattern.match(value):
+        return False
+
+    try:
+        return all(0 <= int(part) <= 255 for part in value.split("."))
+    except ValueError:
+        return False
+
+
+def extract_ips(value: str) -> List[str]:
+    if not value:
+        return []
+
+    return re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", value)
+
+
+def normalise_rds_name(name: str, alt_name: str, ip: str) -> str:
+    cleaned_name = (name or "").strip()
+    if not cleaned_name:
+        return "unknown"
+
+    if is_ipv4(cleaned_name):
+        return "unknown"
+
+    cleaned_ip = (ip or "").strip()
+    if cleaned_ip and cleaned_name == cleaned_ip:
+        return "unknown"
+
+    alt_ips = extract_ips(alt_name or "")
+    if any(cleaned_name == alt_ip for alt_ip in alt_ips):
+        return "unknown"
+
+    return cleaned_name
+
+
 def run_mac_scan(repo_root: Path, args: argparse.Namespace | None = None) -> int:
     mac_dir = repo_root / "data" / "raw" / "av-mac"
     interim_dir = repo_root / "data" / "interim"
@@ -1044,6 +1143,134 @@ def run_get_oui(repo_root: Path, args: argparse.Namespace | None = None) -> int:
         return 1
 
     print("✅ OUI-довідник завантажено: data/cache/oui.csv")
+    print(CONSOLE_SEPARATOR)
+    return 0
+
+
+def run_rds_aggregation(repo_root: Path, args: argparse.Namespace | None = None) -> int:
+    rds_dir = repo_root / "data" / "raw" / "rds"
+    interim_dir = repo_root / "data" / "interim"
+    output_path = interim_dir / "rds.csv"
+
+    files = list(iter_rds_csv_files(rds_dir))
+    if not files:
+        print("❌ RDS файли відсутні у data/raw/rds/")
+        return 0
+
+    vendor_map = load_oui_vendor_map(repo_root / "data" / "cache" / "oui.csv")
+
+    aggregations: Dict[str, RdsAggregation] = {}
+    total_records = 0
+
+    required_columns = {
+        "RemoteHost",
+        "Адрес IPv4",
+        "Имя хоста",
+        "Альтернативные имена хостов",
+        "MAC-адрес",
+        "Время повторения",
+    }
+
+    for csv_path in files:
+        rel_path = csv_path.relative_to(repo_root)
+
+        try:
+            with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+                reader = csv.DictReader(handle, delimiter=";")
+                headers = reader.fieldnames or []
+                missing = [column for column in required_columns if column not in headers]
+                if missing:
+                    print(
+                        f"⚠️ Пропуск файлу {rel_path}: відсутні колонки {', '.join(sorted(missing))}"
+                    )
+                    continue
+
+                for row in reader:
+                    if row is None:
+                        continue
+
+                    mac_raw = (row.get("MAC-адрес") or "").strip()
+                    if not mac_raw:
+                        continue
+
+                    time_raw = (row.get("Время повторения") or "").strip()
+                    if not time_raw:
+                        continue
+
+                    try:
+                        epoch = parse_rds_timestamp(time_raw)
+                    except ValueError:
+                        print(
+                            f"⚠️ Пропуск запису у {rel_path}: некоректне значення часу '{time_raw}'"
+                        )
+                        continue
+
+                    mac = normalise_mac(mac_raw)
+                    source = (row.get("RemoteHost") or "").strip()
+                    ip = (row.get("Адрес IPv4") or "").strip()
+                    alt_name = (row.get("Альтернативные имена хостов") or "").strip()
+                    name_raw = row.get("Имя хоста") or ""
+                    name = normalise_rds_name(name_raw, alt_name, ip)
+
+                    aggregation = aggregations.setdefault(mac, RdsAggregation(mac=mac))
+                    aggregation.add_entry(source=source, ip=ip, name=name, epoch=epoch)
+
+                    total_records += 1
+        except OSError as exc:
+            print(f"⚠️ Неможливо прочитати {rel_path}: {exc}")
+
+    interim_dir.mkdir(parents=True, exist_ok=True)
+
+    columns = [
+        "source",
+        "ip",
+        "mac",
+        "vendor",
+        "name",
+        "firstDate",
+        "lastDate",
+        "firstDateEpoch",
+        "lastDateEpoch",
+        "count",
+        "randomized",
+        "dateList",
+    ]
+
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(columns)
+
+        for mac in sorted(aggregations.keys()):
+            aggregation = aggregations[mac]
+            if aggregation.first_epoch is None or aggregation.last_epoch is None:
+                continue
+
+            first_date = epoch_to_str(float(aggregation.first_epoch))
+            last_date = epoch_to_str(float(aggregation.last_epoch))
+            randomized_bool = is_randomized_mac(mac)
+            vendor = resolve_vendor(mac, vendor_map, randomized_bool)
+            date_list = ", ".join(str(epoch) for epoch in aggregation.sorted_epochs())
+
+            writer.writerow(
+                [
+                    aggregation.last_source,
+                    aggregation.last_ip,
+                    mac,
+                    vendor,
+                    aggregation.last_name,
+                    first_date,
+                    last_date,
+                    str(aggregation.first_epoch),
+                    str(aggregation.last_epoch),
+                    str(aggregation.count),
+                    "true" if randomized_bool else "false",
+                    date_list,
+                ]
+            )
+
+    print(f"✅ Виявлено RDS-записів (усі файли): {total_records}")
+    print(f"✅ Унікальних MAC-адрес у RDS: {len(aggregations)}")
+    print("✅ Збережено агрегований файл: data/interim/rds.csv")
     print(CONSOLE_SEPARATOR)
     return 0
 
@@ -1490,6 +1717,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Зібрати унікальні MAC-адреси з data/raw/av-mac",
     )
     mac_parser.set_defaults(command_func=run_mac_scan)
+
+    rds_parser = subparsers.add_parser(
+        "rds",
+        help="Агрегувати RDS журнали у data/interim/rds.csv",
+    )
+    rds_parser.set_defaults(command_func=run_rds_aggregation)
 
     oui_parser = subparsers.add_parser(
         "get_oui",
