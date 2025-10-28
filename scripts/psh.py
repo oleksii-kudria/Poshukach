@@ -48,7 +48,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import DefaultDict, Dict, Iterable, List, Pattern, Tuple
+from typing import DefaultDict, Dict, Iterable, List, Pattern, Set, Tuple
 
 import yaml
 
@@ -1304,6 +1304,146 @@ def run_get_oui(repo_root: Path, args: argparse.Namespace | None = None) -> int:
     return 0
 
 
+def generate_rds_result_files(repo_root: Path) -> int:
+    interim_dir = repo_root / "data" / "interim"
+    result_dir = repo_root / "data" / "result"
+
+    rds_path = interim_dir / "rds.csv"
+    mac_path = interim_dir / "mac.csv"
+
+    if not rds_path.exists():
+        print("❌ Файл data/interim/rds.csv не знайдено")
+        return 1
+
+    if not mac_path.exists():
+        print("❌ Файл data/interim/mac.csv не знайдено")
+        return 1
+
+    try:
+        with mac_path.open("r", encoding="utf-8-sig", newline="") as mac_handle:
+            mac_reader = csv.DictReader(mac_handle)
+            mac_headers = mac_reader.fieldnames or []
+            if "mac" not in mac_headers:
+                print("❌ Файл data/interim/mac.csv не містить колонки 'mac'")
+                return 1
+            mac_set: Set[str] = {
+                (row.get("mac") or "").strip().upper()
+                for row in mac_reader
+                if (row.get("mac") or "").strip()
+            }
+    except OSError as exc:
+        print(f"❌ Неможливо прочитати data/interim/mac.csv: {exc}")
+        return 1
+
+    if not mac_set:
+        print("⚠️ У data/interim/mac.csv відсутні MAC-адреси для порівняння")
+
+    ignore_rules_path = repo_root / "configs" / "device_ignore.yml"
+    ignore_config = load_device_ignore_rules(ignore_rules_path)
+    network_rules_path = repo_root / "configs" / "device_network.yml"
+    network_config = load_device_rules(network_rules_path)
+
+    result_dir.mkdir(parents=True, exist_ok=True)
+
+    for path in result_dir.glob("rds-*.csv"):
+        try:
+            path.unlink()
+        except OSError:
+            continue
+
+    random_path = result_dir / "rds-random.csv"
+    ignore_path = result_dir / "rds-ignore.csv"
+    network_path = result_dir / "rds-network.csv"
+    true_path = result_dir / "rds-true.csv"
+    false_path = result_dir / "rds-false.csv"
+
+    ignored_count = 0
+    network_count = 0
+    random_count = 0
+    match_count = 0
+    miss_count = 0
+    total_rows = 0
+
+    try:
+        with rds_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            headers = reader.fieldnames
+            if not headers:
+                print("❌ Файл data/interim/rds.csv не містить заголовок")
+                return 1
+
+            with (
+                random_path.open("w", encoding="utf-8", newline="") as random_handle,
+                ignore_path.open("w", encoding="utf-8", newline="") as ignore_handle,
+                network_path.open("w", encoding="utf-8", newline="") as network_handle,
+                true_path.open("w", encoding="utf-8", newline="") as true_handle,
+                false_path.open("w", encoding="utf-8", newline="") as false_handle,
+            ):
+                writer_random = csv.DictWriter(random_handle, fieldnames=headers)
+                writer_ignore = csv.DictWriter(ignore_handle, fieldnames=headers)
+                writer_network = csv.DictWriter(network_handle, fieldnames=headers)
+                writer_true = csv.DictWriter(true_handle, fieldnames=headers)
+                writer_false = csv.DictWriter(false_handle, fieldnames=headers)
+
+                writer_random.writeheader()
+                writer_ignore.writeheader()
+                writer_network.writeheader()
+                writer_true.writeheader()
+                writer_false.writeheader()
+
+                for row in reader:
+                    if row is None:
+                        continue
+
+                    total_rows += 1
+
+                    randomized_value = (row.get("randomized") or "").strip().lower()
+                    if randomized_value == "true":
+                        writer_random.writerow(row)
+                        random_count += 1
+                        continue
+
+                    name_value = (row.get("name") or "").strip()
+                    if matches_device_rules(name_value, ignore_config.name_rules) or device_matches_vendor_rules(
+                        row,
+                        ignore_config.vendor_rules,
+                        config_label=ignore_config.label or "device_ignore.yml",
+                    ):
+                        writer_ignore.writerow(row)
+                        ignored_count += 1
+                        continue
+
+                    if matches_device_rules(name_value, network_config.name_rules) or device_matches_vendor_rules(
+                        row,
+                        network_config.vendor_rules,
+                        config_label=network_config.label or "device_network.yml",
+                    ):
+                        writer_network.writerow(row)
+                        network_count += 1
+                        continue
+
+                    mac_value = (row.get("mac") or "").strip().upper()
+                    if mac_value and mac_value in mac_set:
+                        writer_true.writerow(row)
+                        match_count += 1
+                    else:
+                        writer_false.writerow(row)
+                        miss_count += 1
+    except OSError as exc:
+        print(f"❌ Неможливо прочитати data/interim/rds.csv: {exc}")
+        return 1
+
+    print(f"✅ Виявлено RDS-записів у data/interim/rds.csv: {total_rows}")
+    print(f"✅ Виявлено MAC-адрес із random: {random_count}")
+    print(f"✅ Виявлено пристроїв, що відповідають правилам ignore: {ignored_count}")
+    print(f"✅ Виявлено мережевих пристроїв: {network_count}")
+    print(f"✅ Виявлено RDS із AV-збігом: {match_count}")
+    print(f"⚠️ Виявлено RDS без AV-збігу: {miss_count}")
+    print("✅ Усі результати збережено до data/result/")
+    print(CONSOLE_SEPARATOR)
+    return 0
+
+
 def run_rds_aggregation(repo_root: Path, args: argparse.Namespace | None = None) -> int:
     rds_dir = repo_root / "data" / "raw" / "rds"
     interim_dir = repo_root / "data" / "interim"
@@ -1428,8 +1568,8 @@ def run_rds_aggregation(repo_root: Path, args: argparse.Namespace | None = None)
     print(f"✅ Виявлено RDS-записів (усі файли): {total_records}")
     print(f"✅ Унікальних MAC-адрес у RDS: {len(aggregations)}")
     print("✅ Збережено агрегований файл: data/interim/rds.csv")
-    print(CONSOLE_SEPARATOR)
-    return 0
+
+    return generate_rds_result_files(repo_root)
 
 
 def write_network_results(
