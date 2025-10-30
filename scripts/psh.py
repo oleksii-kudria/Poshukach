@@ -658,7 +658,9 @@ MANDATORY_FIELDS: List[str] = [
 ]
 
 PAYLOAD_PATTERN = re.compile(
-    r"assigned\s+(?P<ip>\d+\.\d+\.\d+\.\d+)\s+for\s+"
+    r"^dhcp,info\s+\S+\s+assigned\s+"
+    r"(?P<ip>\d{1,3}(?:\.\d{1,3}){3})\s+"
+    r"(?:for|to)\s+"
     r"(?P<mac>[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})(?P<name>.*)$"
 )
 
@@ -883,10 +885,11 @@ def is_client_message(payload: str) -> bool:
     return bool(CLIENT_MESSAGE_PATTERN.search(payload.strip()))
 
 
-def parse_payload(payload: str) -> Tuple[str, str, str]:
-    match = PAYLOAD_PATTERN.search(payload)
+def parse_payload(payload: str) -> Tuple[str, str, str] | None:
+    cleaned = payload.strip()
+    match = PAYLOAD_PATTERN.match(cleaned)
     if not match:
-        raise ValueError("Неможливо розпарсити payloadAsUTF")
+        return None
 
     ip = match.group("ip")
     mac = match.group("mac").upper()
@@ -925,6 +928,8 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
         return 0
 
     aggregations: Dict[str, MacAggregation] = {}
+    processed_records = 0
+    skipped_payload_rows = 0
 
     for file_path in files:
         rel_path = file_path.relative_to(repo_root)
@@ -964,10 +969,13 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
                 if is_client_message(payload):
                     continue
 
-                try:
-                    ip, payload_mac, name = parse_payload(payload)
-                except ValueError as exc:
-                    raise ValueError(f"Помилка парсингу payloadAsUTF: {payload}") from exc
+                parsed = parse_payload(payload)
+                if not parsed:
+                    print(f"⚠️ Неможливо розпарсити рядок payloadAsUTF: {payload}")
+                    skipped_payload_rows += 1
+                    continue
+
+                ip, payload_mac, name = parsed
 
                 if payload_mac != mac:
                     mac = payload_mac
@@ -983,6 +991,7 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
                     epoch_value=epoch_value,
                     seconds=seconds,
                 )
+                processed_records += 1
         except ValueError as exc:
             print(f"❌ Помилка обробки CSV у {rel_path}")
             print(str(exc))
@@ -1049,9 +1058,15 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
             )
             written_rows += 1
 
+    print(f"✅ DHCP логів оброблено: {processed_records}")
+    if skipped_payload_rows:
+        print(f"⚠️ Пропущено некоректних рядків: {skipped_payload_rows}")
+    else:
+        print("✅ Некоректні рядки відсутні")
+    output_rel = output_path.relative_to(repo_root)
     print(
-        "✅ Виявлено та записано унікальних MAC-адрес до data/interim/dhcp.csv: "
-        f"{written_rows}"
+        "✅ Дані збережено до "
+        f"{output_rel} (унікальних MAC-адрес: {written_rows})"
     )
     print(CONSOLE_SEPARATOR)
     return 0
