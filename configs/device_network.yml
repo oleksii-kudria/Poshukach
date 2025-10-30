@@ -7,10 +7,15 @@ rules:
   patterns:
     - "Beijing Xiaomi Mobile Software Co., Ltd"
     - "Cisco Systems, Inc"
+    - "MERCUSYS TECHNOLOGIES CO., LTD."
+    - "MERCURY COMMUNICATION TECHNOLOGIES CO.,LTD."
+    - "Netis Technology Co., Ltd."
     - "Routerboard.com"
-    - "(?i)^mikrotik"
-    - "(?i)^tp[- ]?link"
+    - "TP-LINK TECHNOLOGIES CO.,LTD."
     - "Ubiquiti Inc"
+
+- mode: vendor
+  patterns:
+    - "TP-Link Systems Inc"
   except:
-    name_regex:
-      - "(?i)^desktop-"
+    name_regex: ["^(WS-|DESKTOP|LAPTOP|PC|WIN-|DESKTOP-)", "(?i)MacBook|iPhone|Android"]
