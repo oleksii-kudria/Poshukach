@@ -10,11 +10,13 @@ rules:
 - mode: contains
   patterns:
     - "canon"
+    - "ecoflow"
     - "epson"
     - "huawei"
     - "galaxy"
     - "ipad"
     - "iphone"
+    - "lg_smart"
     - "lgwebostv"
     - "pixe"
     - "poco"
@@ -34,6 +36,7 @@ rules:
   patterns:
     - "Apple, Inc."
     - "Cisco Systems, Inc"
+    - "HUAWEI TECHNOLOGIES CO.,LTD"
     - "Motorola Mobility LLC, a Lenovo Company"
     - "OnePlus Technology (Shenzhen) Co., Ltd"
     - "MERCUSYS TECHNOLOGIES CO., LTD."
@@ -42,6 +45,7 @@ rules:
     - "Routerboard.com"
     - "Samsung Electronics Co.,Ltd"
     - "SHENZHEN YUNJI INTELLIGENT TECHNOLOGY CO.,LTD"
+    - "Tenda Technology Co.,Ltd.Dongguan branch"
     - "TP-LINK TECHNOLOGIES CO.,LTD."
     - "Ubiquiti Inc"
     - "Xiaomi Communications Co Ltd"
