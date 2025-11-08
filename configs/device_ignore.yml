@@ -34,6 +34,7 @@ rules:
 
 - mode: vendor
   patterns:
+    - "Ajax Systems DMCC"
     - "Apple, Inc."
     - "Cisco Systems, Inc"
     - "CLOUD NETWORK TECHNOLOGY SINGAPORE PTE. LTD."
@@ -52,6 +53,7 @@ rules:
     - "Ubiquiti Inc"
     - "vivo Mobile Communication Co., Ltd."
     - "Xiaomi Communications Co Ltd"
+    - "Zhejiang Dahua Technology Co., Ltd."
     - "zte corporation"
 
 
