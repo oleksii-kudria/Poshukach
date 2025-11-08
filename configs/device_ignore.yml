@@ -53,7 +53,6 @@ rules:
     - "vivo Mobile Communication Co., Ltd."
     - "Xiaomi Communications Co Ltd"
     - "zte corporation"
-    
 
 
 - mode: vendor

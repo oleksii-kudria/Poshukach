@@ -15,6 +15,7 @@ rules:
     - "Tenda Technology Co.,Ltd.Dongguan branch"
     - "TP-LINK TECHNOLOGIES CO.,LTD."
     - "Ubiquiti Inc"
+    
 
 - mode: vendor
   patterns:
