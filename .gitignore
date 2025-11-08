@@ -4,6 +4,7 @@ data/**/*.txt
 # Ігноруємо всі CSV у data/ та підпапках
 data/**/*.csv
 
+
 # Дозволяємо приклади *.example.csv
 !data/**/*.example.csv
 

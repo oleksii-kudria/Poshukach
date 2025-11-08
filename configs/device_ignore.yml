@@ -36,21 +36,25 @@ rules:
   patterns:
     - "Apple, Inc."
     - "Cisco Systems, Inc"
+    - "CLOUD NETWORK TECHNOLOGY SINGAPORE PTE. LTD."
     - "HUAWEI TECHNOLOGIES CO.,LTD"
-    - "Motorola Mobility LLC, a Lenovo Company"
-    - "OnePlus Technology (Shenzhen) Co., Ltd"
-    - "MERCUSYS TECHNOLOGIES CO., LTD."
     - "MERCURY COMMUNICATION TECHNOLOGIES CO.,LTD."
+    - "MERCUSYS TECHNOLOGIES CO., LTD."
+    - "Motorola Mobility LLC, a Lenovo Company"
     - "Netis Technology Co., Ltd."
+    - "OnePlus Technology (Shenzhen) Co., Ltd"
     - "Routerboard.com"
     - "Samsung Electronics Co.,Ltd"
-    - "SHENZHEN YUNJI INTELLIGENT TECHNOLOGY CO.,LTD"
     - "Shenzhen Water World Information Co.,Ltd."
+    - "SHENZHEN YUNJI INTELLIGENT TECHNOLOGY CO.,LTD"
     - "Tenda Technology Co.,Ltd.Dongguan branch"
     - "TP-LINK TECHNOLOGIES CO.,LTD."
     - "Ubiquiti Inc"
     - "vivo Mobile Communication Co., Ltd."
     - "Xiaomi Communications Co Ltd"
+    - "zte corporation"
+    
+
 
 - mode: vendor
   patterns:
