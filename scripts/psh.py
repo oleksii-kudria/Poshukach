@@ -47,6 +47,7 @@ import urllib.request
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import DefaultDict, Dict, Iterable, List, Pattern, Set, Tuple
 
@@ -817,8 +818,12 @@ def parse_epoch(epoch_raw: str) -> Tuple[int, float]:
     return value, seconds
 
 
+KYIV_TZ = ZoneInfo("Europe/Kyiv")
+UTC_TZ = ZoneInfo("UTC")
+
+
 def epoch_to_str(seconds: float) -> str:
-    dt = datetime.utcfromtimestamp(seconds)
+    dt = datetime.fromtimestamp(seconds, tz=UTC_TZ).astimezone(KYIV_TZ)
     return dt.strftime("%Y.%m.%d %H:%M")
 
 
@@ -1200,8 +1205,8 @@ def parse_rds_timestamp(value: str) -> int:
     if not cleaned:
         raise ValueError("empty timestamp")
 
-    dt = datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S")
-    epoch = int((dt - datetime(1970, 1, 1)).total_seconds())
+    dt = datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC_TZ)
+    epoch = int(dt.timestamp())
     return epoch
 
 
