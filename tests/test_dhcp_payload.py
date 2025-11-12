@@ -57,3 +57,19 @@ def test_parse_payload_normalises_mac_and_name_in_cef_msg():
     )
     parsed = psh.parse_payload(payload)
     assert parsed == ("10.10.0.100", "12:34:56:78:9A:BC", "unknown")
+
+
+def test_should_skip_cef_client_message_detects_exact_pattern():
+    payload = (
+        "2025-11-08T03:12:43.611+0200 1MB CEF:0|MikroTik|RB2011UAS|7.19.4 (stable)|16|dhcp,info|Low|"
+        "dvcchost=1MB dvc=10.10.10.225 msg=dhcp-client on ether1 got IP address 192.168.1.22"
+    )
+    assert psh.should_skip_cef_client_message(payload) is True
+
+
+def test_should_skip_cef_client_message_does_not_skip_assignment():
+    payload = (
+        "2025-11-01T01:10:54.868+0200 1MB CEF:0|MikroTik|RB2011UAS|7.19.4 (stable)|16|dhcp,info|Low|"
+        "dvchost=1MB dvc=10.10.10.225 msg=dhcp1 assigned 192.168.1.14 for AA:44:33:00:77:CC POCO"
+    )
+    assert psh.should_skip_cef_client_message(payload) is False

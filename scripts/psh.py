@@ -670,6 +670,11 @@ CEF_KEY_PATTERN = re.compile(r"([A-Za-z0-9]+)=")
 
 CLIENT_MESSAGE_PATTERN = re.compile(r"^dhcp,info\s+dhcp-client\s+on", re.IGNORECASE)
 
+CEF_CLIENT_MESSAGE_PATTERN = re.compile(
+    r"^dhcp-client\s+on\s+[^\s]+\s+got\s+IP\s+address\s+[0-9.]+$",
+    re.IGNORECASE,
+)
+
 
 
 @dataclass
@@ -948,8 +953,7 @@ def parse_cef_extension(extension: str) -> Dict[str, str]:
     return result
 
 
-def parse_cef_payload(payload: str) -> Tuple[str, str, str] | None:
-    # CEF format: header components separated by '|' with extension at the end.
+def extract_cef_msg(payload: str) -> str | None:
     try:
         _, _, _, _, _, _, _, extension = payload.split("|", 7)
     except ValueError:
@@ -961,10 +965,37 @@ def parse_cef_payload(payload: str) -> Tuple[str, str, str] | None:
         msg_match = re.search(r"msg=([^=]+)", extension)
         if msg_match:
             msg = msg_match.group(1).strip()
+
+    if not msg:
+        return None
+
+    return msg.strip()
+
+
+def parse_cef_payload(payload: str) -> Tuple[str, str, str] | None:
+    # CEF format: header components separated by '|' with extension at the end.
+    msg = extract_cef_msg(payload)
     if not msg:
         return None
 
     return parse_standard_payload(msg)
+
+
+def should_skip_cef_client_message(payload: str) -> bool:
+    cleaned = payload.strip()
+    if "CEF:" not in cleaned:
+        return False
+
+    msg = extract_cef_msg(cleaned)
+    if not msg:
+        return False
+
+    stripped = msg.strip()
+    if CEF_CLIENT_MESSAGE_PATTERN.match(stripped):
+        return True
+
+    lowered = stripped.lower()
+    return "dhcp-client on" in lowered and "got ip address" in lowered
 
 
 def parse_payload(payload: str) -> Tuple[str, str, str] | None:
@@ -1009,6 +1040,7 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
     aggregations: Dict[str, MacAggregation] = {}
     processed_records = 0
     skipped_payload_rows = 0
+    skipped_cef_client_rows = 0
 
     for file_path in files:
         rel_path = file_path.relative_to(repo_root)
@@ -1044,6 +1076,10 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
 
                 if not mac or not payload or not epoch_raw:
                     raise ValueError("Рядок містить порожні обовʼязкові поля")
+
+                if should_skip_cef_client_message(payload):
+                    skipped_cef_client_rows += 1
+                    continue
 
                 if is_client_message(payload):
                     continue
@@ -1142,6 +1178,10 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
         print(f"⚠️ Пропущено некоректних рядків: {skipped_payload_rows}")
     else:
         print("✅ Некоректні рядки відсутні")
+    print(
+        "🔧 CEF: пропущено службових рядків dhcp-client: "
+        f"{skipped_cef_client_rows}"
+    )
     output_rel = output_path.relative_to(repo_root)
     print(
         "✅ Дані збережено до "
