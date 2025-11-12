@@ -658,12 +658,15 @@ MANDATORY_FIELDS: List[str] = [
     "deviceTime",
 ]
 
-PAYLOAD_PATTERN = re.compile(
-    r"^dhcp,info\s+\S+\s+assigned\s+"
+STANDARD_PAYLOAD_PATTERN = re.compile(
+    r"^(?:dhcp,info\s+)?\S+\s+assigned\s+"
     r"(?P<ip>\d{1,3}(?:\.\d{1,3}){3})\s+"
     r"(?:for|to)\s+"
-    r"(?P<mac>[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})(?P<name>.*)$"
+    r"(?P<mac>[0-9A-Fa-f:-]{2,})(?:\s+(?P<name>.+))?$",
+    re.IGNORECASE,
 )
+
+CEF_KEY_PATTERN = re.compile(r"([A-Za-z0-9]+)=")
 
 CLIENT_MESSAGE_PATTERN = re.compile(r"^dhcp,info\s+dhcp-client\s+on", re.IGNORECASE)
 
@@ -890,18 +893,89 @@ def is_client_message(payload: str) -> bool:
     return bool(CLIENT_MESSAGE_PATTERN.search(payload.strip()))
 
 
-def parse_payload(payload: str) -> Tuple[str, str, str] | None:
-    cleaned = payload.strip()
-    match = PAYLOAD_PATTERN.match(cleaned)
+def normalise_mac_address(mac: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Fa-f]", "", mac)
+    if len(cleaned) != 12:
+        return mac.upper()
+    pairs = [cleaned[i : i + 2] for i in range(0, 12, 2)]
+    return ":".join(pair.upper() for pair in pairs)
+
+
+def clean_device_name(name: str | None, *, ip: str, mac: str) -> str:
+    if not name:
+        return "unknown"
+
+    cleaned = name.strip().strip('"').strip("'")
+    if not cleaned:
+        return "unknown"
+
+    if cleaned.upper() == mac.upper() or cleaned == ip:
+        return "unknown"
+
+    normalised = normalise_mac_address(cleaned)
+    if normalised == mac:
+        return "unknown"
+
+    return cleaned
+
+
+def parse_standard_payload(payload: str) -> Tuple[str, str, str] | None:
+    match = STANDARD_PAYLOAD_PATTERN.match(payload.strip())
     if not match:
         return None
 
     ip = match.group("ip")
-    mac = match.group("mac").upper()
-    name = match.group("name").strip()
-    if not name:
-        name = "unknown"
+    mac = normalise_mac_address(match.group("mac"))
+    name = clean_device_name(match.group("name"), ip=ip, mac=mac)
     return ip, mac, name
+
+
+def parse_cef_extension(extension: str) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    if not extension:
+        return result
+
+    matches = list(CEF_KEY_PATTERN.finditer(extension))
+    if not matches:
+        return result
+
+    for index, match in enumerate(matches):
+        key = match.group(1).lower()
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(extension)
+        value = extension[start:end].strip()
+        result[key] = value
+    return result
+
+
+def parse_cef_payload(payload: str) -> Tuple[str, str, str] | None:
+    # CEF format: header components separated by '|' with extension at the end.
+    try:
+        _, _, _, _, _, _, _, extension = payload.split("|", 7)
+    except ValueError:
+        return None
+
+    fields = parse_cef_extension(extension)
+    msg = fields.get("msg")
+    if not msg:
+        msg_match = re.search(r"msg=([^=]+)", extension)
+        if msg_match:
+            msg = msg_match.group(1).strip()
+    if not msg:
+        return None
+
+    return parse_standard_payload(msg)
+
+
+def parse_payload(payload: str) -> Tuple[str, str, str] | None:
+    cleaned = payload.strip()
+    if "CEF:" in cleaned:
+        parsed = parse_cef_payload(cleaned)
+        if parsed:
+            return parsed
+        # fall back to standard parsing if CEF parsing fails
+
+    return parse_standard_payload(cleaned)
 
 
 def build_header_map(header: List[str]) -> Dict[str, int]:
