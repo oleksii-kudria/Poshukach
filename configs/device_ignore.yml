@@ -18,6 +18,7 @@ rules:
     - "iphone"
     - "lg_smart"
     - "lgwebostv"
+    - "nokia"
     - "pixe"
     - "poco"
     - "realme"
@@ -53,6 +54,7 @@ rules:
     - "TP-LINK TECHNOLOGIES CO.,LTD."
     - "Ubiquiti Inc"
     - "vivo Mobile Communication Co., Ltd."
+    - "Xerox Corporation"
     - "Xiaomi Communications Co Ltd"
 
 - mode: vendor
