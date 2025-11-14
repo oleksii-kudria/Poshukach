@@ -125,6 +125,12 @@ class DeviceFilterConfig:
 
 
 @dataclass
+class DhcpLineStats:
+    prefixed_processed: int = 0
+    skipped_client_rows: int = 0
+
+
+@dataclass
 class VendorRuleStats:
     config_label: str
     applied: int = 0
@@ -658,17 +664,26 @@ MANDATORY_FIELDS: List[str] = [
     "deviceTime",
 ]
 
-STANDARD_PAYLOAD_PATTERN = re.compile(
-    r"^(?:dhcp,info\s+)?\S+\s+assigned\s+"
+PREFIXED_DHCP_PATTERN = re.compile(
+    r"(?i)^dhcp,info\s+([^:]+):\s+(?P<body>.*)$"
+)
+
+DHCP_INFO_PREFIX_PATTERN = re.compile(r"(?i)^dhcp,info\s+")
+
+DHCP_ASSIGNMENT_PATTERN = re.compile(
+    r"^(?P<dhcpName>[^\s:]+)\s+assigned\s+"
     r"(?P<ip>\d{1,3}(?:\.\d{1,3}){3})\s+"
     r"(?:for|to)\s+"
-    r"(?P<mac>[0-9A-Fa-f:-]{2,})(?:\s+(?P<name>.+))?$",
+    r"(?P<mac>[0-9A-Fa-f:.-]{2,})(?:\s+(?P<name>.+))?$",
     re.IGNORECASE,
 )
 
 CEF_KEY_PATTERN = re.compile(r"([A-Za-z0-9]+)=")
 
-CLIENT_MESSAGE_PATTERN = re.compile(r"^dhcp,info\s+dhcp-client\s+on", re.IGNORECASE)
+STANDARD_CLIENT_PATTERN = re.compile(
+    r"^dhcp-client\s+on\s+[^\s]+\s+got\s+IP\s+address\s+[0-9.]+$",
+    re.IGNORECASE,
+)
 
 CEF_CLIENT_MESSAGE_PATTERN = re.compile(
     r"^dhcp-client\s+on\s+[^\s]+\s+got\s+IP\s+address\s+[0-9.]+$",
@@ -894,16 +909,49 @@ def resolve_vendor(mac: str, vendor_map: Dict[str, str], randomized: bool) -> st
     return vendor_map.get(oui, "unknown")
 
 
-def is_client_message(payload: str) -> bool:
-    return bool(CLIENT_MESSAGE_PATTERN.search(payload.strip()))
-
-
 def normalise_mac_address(mac: str) -> str:
     cleaned = re.sub(r"[^0-9A-Fa-f]", "", mac)
     if len(cleaned) != 12:
         return mac.upper()
     pairs = [cleaned[i : i + 2] for i in range(0, 12, 2)]
     return ":".join(pair.upper() for pair in pairs)
+
+
+def extract_standard_body(payload: str, *, stats: DhcpLineStats | None = None) -> str:
+    cleaned = payload.strip()
+    prefixed_match = PREFIXED_DHCP_PATTERN.match(cleaned)
+    if prefixed_match:
+        if stats:
+            stats.prefixed_processed += 1
+        body = prefixed_match.group("body").strip()
+    else:
+        body = cleaned
+
+    body = DHCP_INFO_PREFIX_PATTERN.sub("", body, count=1).strip()
+    return body
+
+
+def should_skip_standard_client_body(body: str) -> bool:
+    stripped = body.strip()
+    if not stripped:
+        return False
+
+    if STANDARD_CLIENT_PATTERN.match(stripped):
+        return True
+
+    lowered = stripped.lower()
+    return "dhcp-client on" in lowered and "got ip address" in lowered
+
+
+def parse_standard_body(body: str) -> Tuple[str, str, str] | None:
+    match = DHCP_ASSIGNMENT_PATTERN.match(body.strip())
+    if not match:
+        return None
+
+    ip = match.group("ip")
+    mac = normalise_mac_address(match.group("mac"))
+    name = clean_device_name(match.group("name"), ip=ip, mac=mac)
+    return ip, mac, name
 
 
 def clean_device_name(name: str | None, *, ip: str, mac: str) -> str:
@@ -925,14 +973,8 @@ def clean_device_name(name: str | None, *, ip: str, mac: str) -> str:
 
 
 def parse_standard_payload(payload: str) -> Tuple[str, str, str] | None:
-    match = STANDARD_PAYLOAD_PATTERN.match(payload.strip())
-    if not match:
-        return None
-
-    ip = match.group("ip")
-    mac = normalise_mac_address(match.group("mac"))
-    name = clean_device_name(match.group("name"), ip=ip, mac=mac)
-    return ip, mac, name
+    body = extract_standard_body(payload)
+    return parse_standard_body(body)
 
 
 def parse_cef_extension(extension: str) -> Dict[str, str]:
@@ -1041,6 +1083,7 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
     processed_records = 0
     skipped_payload_rows = 0
     skipped_cef_client_rows = 0
+    dhcp_line_stats = DhcpLineStats()
 
     for file_path in files:
         rel_path = file_path.relative_to(repo_root)
@@ -1081,10 +1124,14 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
                     skipped_cef_client_rows += 1
                     continue
 
-                if is_client_message(payload):
-                    continue
-
-                parsed = parse_payload(payload)
+                if "CEF:" in payload:
+                    parsed = parse_payload(payload)
+                else:
+                    body = extract_standard_body(payload, stats=dhcp_line_stats)
+                    if should_skip_standard_client_body(body):
+                        dhcp_line_stats.skipped_client_rows += 1
+                        continue
+                    parsed = parse_standard_body(body)
                 if not parsed:
                     print(f"⚠️ Неможливо розпарсити рядок payloadAsUTF: {payload}")
                     skipped_payload_rows += 1
@@ -1181,6 +1228,14 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
     print(
         "🔧 CEF: пропущено службових рядків dhcp-client: "
         f"{skipped_cef_client_rows}"
+    )
+    print(
+        "🔧 Префіксовані DHCP-рядки: опрацьовано="
+        f"{dhcp_line_stats.prefixed_processed}"
+    )
+    print(
+        "🔧 Пропущено client-рядків (префікс/стандарт): "
+        f"{dhcp_line_stats.skipped_client_rows}"
     )
     output_rel = output_path.relative_to(repo_root)
     print(

@@ -37,6 +37,23 @@ def test_parse_payload_supports_various_server_names():
         assert parsed == expected
 
 
+def test_parse_payload_supports_prefixed_messages():
+    samples = [
+        (
+            "dhcp,info 3CC_: server-guest assigned 192.168.1.108 for FF:EE:DD:CC:BB:AA S24-FE",
+            ("192.168.1.108", "FF:EE:DD:CC:BB:AA", "S24-FE"),
+        ),
+        (
+            "dhcp,info myTag: dhcp1 assigned 10.0.0.15 to 00-11-22-33-44-55",
+            ("10.0.0.15", "00:11:22:33:44:55", "unknown"),
+        ),
+    ]
+
+    for payload, expected in samples:
+        parsed = psh.parse_payload(payload)
+        assert parsed == expected
+
+
 def test_parse_payload_returns_none_for_unexpected_format():
     assert psh.parse_payload("dhcp,info dhcp1 something unexpected") is None
 
@@ -73,3 +90,13 @@ def test_should_skip_cef_client_message_does_not_skip_assignment():
         "dvchost=1MB dvc=10.10.10.225 msg=dhcp1 assigned 192.168.1.14 for AA:44:33:00:77:CC POCO"
     )
     assert psh.should_skip_cef_client_message(payload) is False
+
+
+def test_should_skip_standard_client_body_matches_exact_pattern():
+    body = "dhcp-client on ether2 got IP address 192.168.1.223"
+    assert psh.should_skip_standard_client_body(body) is True
+
+
+def test_should_skip_standard_client_body_uses_substring_detection():
+    body = "Some dhcp-client on ether3 log that later got IP address 10.0.0.5"
+    assert psh.should_skip_standard_client_body(body) is True
