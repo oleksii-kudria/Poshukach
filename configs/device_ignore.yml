@@ -4,11 +4,15 @@ rules:
     - "air-"
     - "googletv"
     - "miwifi"
+    - "pad-"
     - "smart"
     - "tv-"
+    - "xq-"
+    - "zte-"
 
 - mode: contains
   patterns:
+    - "android"
     - "canon"
     - "ecoflow"
     - "epson"
@@ -19,6 +23,7 @@ rules:
     - "lg_smart"
     - "lgwebostv"
     - "nokia"
+    - "oppo"
     - "pixe"
     - "poco"
     - "realme"
@@ -42,6 +47,7 @@ rules:
     - "HUAWEI TECHNOLOGIES CO.,LTD"
     - "Motorola Mobility LLC, a Lenovo Company"
     - "OnePlus Technology (Shenzhen) Co., Ltd"
+    - "LG Electronics (Mobile Communications)"
     - "MERCUSYS TECHNOLOGIES CO., LTD."
     - "MERCURY COMMUNICATION TECHNOLOGIES CO.,LTD."
     - "Mercury Systems – Trusted Mission Solutions, Inc."
