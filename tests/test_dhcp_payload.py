@@ -100,3 +100,25 @@ def test_should_skip_standard_client_body_matches_exact_pattern():
 def test_should_skip_standard_client_body_uses_substring_detection():
     body = "Some dhcp-client on ether3 log that later got IP address 10.0.0.5"
     assert psh.should_skip_standard_client_body(body) is True
+
+
+def test_parse_payload_supports_dnsmasq_dhcpack():
+    payload = (
+        "<30>Dec 14 06:37:13 UDMD UDMD dnsmasq-dhcp[3896]: DHCPACK(br0) "
+        "192.168.2.154 84:78:48:c0:28:92 T1-UPS-2"
+    )
+
+    parsed = psh.parse_payload(payload)
+
+    assert parsed == ("192.168.2.154", "84:78:48:C0:28:92", "T1-UPS-2")
+
+
+def test_parse_payload_sets_unknown_name_for_dnsmasq_without_hostname():
+    payload = (
+        "<30>Dec 14 06:37:04 UDMD UDMD dnsmasq-dhcp[3896]: DHCPACK(br0) "
+        "192.168.2.200 60:22:32:21:22:19"
+    )
+
+    parsed = psh.parse_payload(payload)
+
+    assert parsed == ("192.168.2.200", "60:22:32:21:22:19", "unknown")

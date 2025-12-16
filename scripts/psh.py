@@ -128,6 +128,8 @@ class DeviceFilterConfig:
 class DhcpLineStats:
     prefixed_processed: int = 0
     skipped_client_rows: int = 0
+    dnsmasq_processed: int = 0
+    dnsmasq_skipped: int = 0
 
 
 @dataclass
@@ -678,6 +680,12 @@ DHCP_ASSIGNMENT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+DNSMASQ_DHCPACK_PATTERN = re.compile(
+    r"DHCPACK\([^)]*\)\s+(?P<ip>[0-9.]+)\s+"
+    r"(?P<mac>(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})(?:\s+(?P<name>\S.+))?$",
+    re.IGNORECASE,
+)
+
 CEF_KEY_PATTERN = re.compile(r"([A-Za-z0-9]+)=")
 
 STANDARD_CLIENT_PATTERN = re.compile(
@@ -977,6 +985,34 @@ def parse_standard_payload(payload: str) -> Tuple[str, str, str] | None:
     return parse_standard_body(body)
 
 
+def is_dnsmasq_dhcpack(payload: str) -> bool:
+    lowered = payload.lower()
+    return "dnsmasq-dhcp" in lowered and "dhcpack(" in lowered
+
+
+def parse_dnsmasq_dhcpack(
+    payload: str, *, stats: DhcpLineStats | None = None
+) -> Tuple[str, str, str] | None:
+    match = DNSMASQ_DHCPACK_PATTERN.search(payload)
+    if not match:
+        if stats:
+            stats.dnsmasq_skipped += 1
+        print(
+            f"⚠️ Неможливо розпарсити dnsmasq DHCPACK рядок payloadAsUTF: {payload}"
+        )
+        return None
+
+    ip = match.group("ip")
+    mac = normalise_mac_address(match.group("mac"))
+    name_raw = match.group("name")
+    name = clean_device_name(name_raw, ip=ip, mac=mac)
+
+    if stats:
+        stats.dnsmasq_processed += 1
+
+    return ip, mac, name
+
+
 def parse_cef_extension(extension: str) -> Dict[str, str]:
     result: Dict[str, str] = {}
     if not extension:
@@ -1040,8 +1076,11 @@ def should_skip_cef_client_message(payload: str) -> bool:
     return "dhcp-client on" in lowered and "got ip address" in lowered
 
 
-def parse_payload(payload: str) -> Tuple[str, str, str] | None:
+def parse_payload(payload: str, *, stats: DhcpLineStats | None = None) -> Tuple[str, str, str] | None:
     cleaned = payload.strip()
+    if is_dnsmasq_dhcpack(cleaned):
+        return parse_dnsmasq_dhcpack(cleaned, stats=stats)
+
     if "CEF:" in cleaned:
         parsed = parse_cef_payload(cleaned)
         if parsed:
@@ -1124,8 +1163,11 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
                     skipped_cef_client_rows += 1
                     continue
 
-                if "CEF:" in payload:
-                    parsed = parse_payload(payload)
+                dnsmasq_detected = is_dnsmasq_dhcpack(payload)
+                if dnsmasq_detected:
+                    parsed = parse_dnsmasq_dhcpack(payload, stats=dhcp_line_stats)
+                elif "CEF:" in payload:
+                    parsed = parse_payload(payload, stats=dhcp_line_stats)
                 else:
                     body = extract_standard_body(payload, stats=dhcp_line_stats)
                     if should_skip_standard_client_body(body):
@@ -1133,7 +1175,8 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
                         continue
                     parsed = parse_standard_body(body)
                 if not parsed:
-                    print(f"⚠️ Неможливо розпарсити рядок payloadAsUTF: {payload}")
+                    if not dnsmasq_detected:
+                        print(f"⚠️ Неможливо розпарсити рядок payloadAsUTF: {payload}")
                     skipped_payload_rows += 1
                     continue
 
@@ -1236,6 +1279,14 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
     print(
         "🔧 Пропущено client-рядків (префікс/стандарт): "
         f"{dhcp_line_stats.skipped_client_rows}"
+    )
+    print(
+        "✅ DNSMASQ DHCPACK рядків оброблено: "
+        f"{dhcp_line_stats.dnsmasq_processed}"
+    )
+    print(
+        "⚠️ DNSMASQ DHCPACK рядків пропущено: "
+        f"{dhcp_line_stats.dnsmasq_skipped}"
     )
     output_rel = output_path.relative_to(repo_root)
     print(
