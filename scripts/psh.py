@@ -47,6 +47,7 @@ import urllib.request
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import DefaultDict, Dict, Iterable, List, Pattern, Set, Tuple
 
@@ -121,6 +122,14 @@ class DeviceFilterConfig:
     name_rules: List[DeviceRule] = field(default_factory=list)
     vendor_rules: List[VendorRule] = field(default_factory=list)
     label: str = ""
+
+
+@dataclass
+class DhcpLineStats:
+    prefixed_processed: int = 0
+    skipped_client_rows: int = 0
+    dnsmasq_processed: int = 0
+    dnsmasq_skipped: int = 0
 
 
 @dataclass
@@ -657,14 +666,37 @@ MANDATORY_FIELDS: List[str] = [
     "deviceTime",
 ]
 
-PAYLOAD_PATTERN = re.compile(
-    r"^dhcp,info\s+\S+\s+assigned\s+"
-    r"(?P<ip>\d{1,3}(?:\.\d{1,3}){3})\s+"
-    r"(?:for|to)\s+"
-    r"(?P<mac>[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})(?P<name>.*)$"
+PREFIXED_DHCP_PATTERN = re.compile(
+    r"(?i)^dhcp,info\s+([^:]+):\s+(?P<body>.*)$"
 )
 
-CLIENT_MESSAGE_PATTERN = re.compile(r"^dhcp,info\s+dhcp-client\s+on", re.IGNORECASE)
+DHCP_INFO_PREFIX_PATTERN = re.compile(r"(?i)^dhcp,info\s+")
+
+DHCP_ASSIGNMENT_PATTERN = re.compile(
+    r"^(?P<dhcpName>[^\s:]+)\s+assigned\s+"
+    r"(?P<ip>\d{1,3}(?:\.\d{1,3}){3})\s+"
+    r"(?:for|to)\s+"
+    r"(?P<mac>[0-9A-Fa-f:.-]{2,})(?:\s+(?P<name>.+))?$",
+    re.IGNORECASE,
+)
+
+DNSMASQ_DHCPACK_PATTERN = re.compile(
+    r"DHCPACK\([^)]*\)\s+(?P<ip>[0-9.]+)\s+"
+    r"(?P<mac>(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})(?:\s+(?P<name>\S.+))?$",
+    re.IGNORECASE,
+)
+
+CEF_KEY_PATTERN = re.compile(r"([A-Za-z0-9]+)=")
+
+STANDARD_CLIENT_PATTERN = re.compile(
+    r"^dhcp-client\s+on\s+[^\s]+\s+got\s+IP\s+address\s+[0-9.]+$",
+    re.IGNORECASE,
+)
+
+CEF_CLIENT_MESSAGE_PATTERN = re.compile(
+    r"^dhcp-client\s+on\s+[^\s]+\s+got\s+IP\s+address\s+[0-9.]+$",
+    re.IGNORECASE,
+)
 
 
 
@@ -817,8 +849,12 @@ def parse_epoch(epoch_raw: str) -> Tuple[int, float]:
     return value, seconds
 
 
+KYIV_TZ = ZoneInfo("Europe/Kyiv")
+UTC_TZ = ZoneInfo("UTC")
+
+
 def epoch_to_str(seconds: float) -> str:
-    dt = datetime.utcfromtimestamp(seconds)
+    dt = datetime.fromtimestamp(seconds, tz=UTC_TZ).astimezone(KYIV_TZ)
     return dt.strftime("%Y.%m.%d %H:%M")
 
 
@@ -881,22 +917,177 @@ def resolve_vendor(mac: str, vendor_map: Dict[str, str], randomized: bool) -> st
     return vendor_map.get(oui, "unknown")
 
 
-def is_client_message(payload: str) -> bool:
-    return bool(CLIENT_MESSAGE_PATTERN.search(payload.strip()))
+def normalise_mac_address(mac: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Fa-f]", "", mac)
+    if len(cleaned) != 12:
+        return mac.upper()
+    pairs = [cleaned[i : i + 2] for i in range(0, 12, 2)]
+    return ":".join(pair.upper() for pair in pairs)
 
 
-def parse_payload(payload: str) -> Tuple[str, str, str] | None:
+def extract_standard_body(payload: str, *, stats: DhcpLineStats | None = None) -> str:
     cleaned = payload.strip()
-    match = PAYLOAD_PATTERN.match(cleaned)
+    prefixed_match = PREFIXED_DHCP_PATTERN.match(cleaned)
+    if prefixed_match:
+        if stats:
+            stats.prefixed_processed += 1
+        body = prefixed_match.group("body").strip()
+    else:
+        body = cleaned
+
+    body = DHCP_INFO_PREFIX_PATTERN.sub("", body, count=1).strip()
+    return body
+
+
+def should_skip_standard_client_body(body: str) -> bool:
+    stripped = body.strip()
+    if not stripped:
+        return False
+
+    if STANDARD_CLIENT_PATTERN.match(stripped):
+        return True
+
+    lowered = stripped.lower()
+    return "dhcp-client on" in lowered and "got ip address" in lowered
+
+
+def parse_standard_body(body: str) -> Tuple[str, str, str] | None:
+    match = DHCP_ASSIGNMENT_PATTERN.match(body.strip())
     if not match:
         return None
 
     ip = match.group("ip")
-    mac = match.group("mac").upper()
-    name = match.group("name").strip()
-    if not name:
-        name = "unknown"
+    mac = normalise_mac_address(match.group("mac"))
+    name = clean_device_name(match.group("name"), ip=ip, mac=mac)
     return ip, mac, name
+
+
+def clean_device_name(name: str | None, *, ip: str, mac: str) -> str:
+    if not name:
+        return "unknown"
+
+    cleaned = name.strip().strip('"').strip("'")
+    if not cleaned:
+        return "unknown"
+
+    if cleaned.upper() == mac.upper() or cleaned == ip:
+        return "unknown"
+
+    normalised = normalise_mac_address(cleaned)
+    if normalised == mac:
+        return "unknown"
+
+    return cleaned
+
+
+def parse_standard_payload(payload: str) -> Tuple[str, str, str] | None:
+    body = extract_standard_body(payload)
+    return parse_standard_body(body)
+
+
+def is_dnsmasq_dhcpack(payload: str) -> bool:
+    lowered = payload.lower()
+    return "dnsmasq-dhcp" in lowered and "dhcpack(" in lowered
+
+
+def parse_dnsmasq_dhcpack(
+    payload: str, *, stats: DhcpLineStats | None = None
+) -> Tuple[str, str, str] | None:
+    match = DNSMASQ_DHCPACK_PATTERN.search(payload)
+    if not match:
+        if stats:
+            stats.dnsmasq_skipped += 1
+        print(
+            f"⚠️ Неможливо розпарсити dnsmasq DHCPACK рядок payloadAsUTF: {payload}"
+        )
+        return None
+
+    ip = match.group("ip")
+    mac = normalise_mac_address(match.group("mac"))
+    name_raw = match.group("name")
+    name = clean_device_name(name_raw, ip=ip, mac=mac)
+
+    if stats:
+        stats.dnsmasq_processed += 1
+
+    return ip, mac, name
+
+
+def parse_cef_extension(extension: str) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    if not extension:
+        return result
+
+    matches = list(CEF_KEY_PATTERN.finditer(extension))
+    if not matches:
+        return result
+
+    for index, match in enumerate(matches):
+        key = match.group(1).lower()
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(extension)
+        value = extension[start:end].strip()
+        result[key] = value
+    return result
+
+
+def extract_cef_msg(payload: str) -> str | None:
+    try:
+        _, _, _, _, _, _, _, extension = payload.split("|", 7)
+    except ValueError:
+        return None
+
+    fields = parse_cef_extension(extension)
+    msg = fields.get("msg")
+    if not msg:
+        msg_match = re.search(r"msg=([^=]+)", extension)
+        if msg_match:
+            msg = msg_match.group(1).strip()
+
+    if not msg:
+        return None
+
+    return msg.strip()
+
+
+def parse_cef_payload(payload: str) -> Tuple[str, str, str] | None:
+    # CEF format: header components separated by '|' with extension at the end.
+    msg = extract_cef_msg(payload)
+    if not msg:
+        return None
+
+    return parse_standard_payload(msg)
+
+
+def should_skip_cef_client_message(payload: str) -> bool:
+    cleaned = payload.strip()
+    if "CEF:" not in cleaned:
+        return False
+
+    msg = extract_cef_msg(cleaned)
+    if not msg:
+        return False
+
+    stripped = msg.strip()
+    if CEF_CLIENT_MESSAGE_PATTERN.match(stripped):
+        return True
+
+    lowered = stripped.lower()
+    return "dhcp-client on" in lowered and "got ip address" in lowered
+
+
+def parse_payload(payload: str, *, stats: DhcpLineStats | None = None) -> Tuple[str, str, str] | None:
+    cleaned = payload.strip()
+    if is_dnsmasq_dhcpack(cleaned):
+        return parse_dnsmasq_dhcpack(cleaned, stats=stats)
+
+    if "CEF:" in cleaned:
+        parsed = parse_cef_payload(cleaned)
+        if parsed:
+            return parsed
+        # fall back to standard parsing if CEF parsing fails
+
+    return parse_standard_payload(cleaned)
 
 
 def build_header_map(header: List[str]) -> Dict[str, int]:
@@ -930,6 +1121,8 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
     aggregations: Dict[str, MacAggregation] = {}
     processed_records = 0
     skipped_payload_rows = 0
+    skipped_cef_client_rows = 0
+    dhcp_line_stats = DhcpLineStats()
 
     for file_path in files:
         rel_path = file_path.relative_to(repo_root)
@@ -966,12 +1159,24 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
                 if not mac or not payload or not epoch_raw:
                     raise ValueError("Рядок містить порожні обовʼязкові поля")
 
-                if is_client_message(payload):
+                if should_skip_cef_client_message(payload):
+                    skipped_cef_client_rows += 1
                     continue
 
-                parsed = parse_payload(payload)
+                dnsmasq_detected = is_dnsmasq_dhcpack(payload)
+                if dnsmasq_detected:
+                    parsed = parse_dnsmasq_dhcpack(payload, stats=dhcp_line_stats)
+                elif "CEF:" in payload:
+                    parsed = parse_payload(payload, stats=dhcp_line_stats)
+                else:
+                    body = extract_standard_body(payload, stats=dhcp_line_stats)
+                    if should_skip_standard_client_body(body):
+                        dhcp_line_stats.skipped_client_rows += 1
+                        continue
+                    parsed = parse_standard_body(body)
                 if not parsed:
-                    print(f"⚠️ Неможливо розпарсити рядок payloadAsUTF: {payload}")
+                    if not dnsmasq_detected:
+                        print(f"⚠️ Неможливо розпарсити рядок payloadAsUTF: {payload}")
                     skipped_payload_rows += 1
                     continue
 
@@ -1063,6 +1268,26 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
         print(f"⚠️ Пропущено некоректних рядків: {skipped_payload_rows}")
     else:
         print("✅ Некоректні рядки відсутні")
+    print(
+        "🔧 CEF: пропущено службових рядків dhcp-client: "
+        f"{skipped_cef_client_rows}"
+    )
+    print(
+        "🔧 Префіксовані DHCP-рядки: опрацьовано="
+        f"{dhcp_line_stats.prefixed_processed}"
+    )
+    print(
+        "🔧 Пропущено client-рядків (префікс/стандарт): "
+        f"{dhcp_line_stats.skipped_client_rows}"
+    )
+    print(
+        "✅ DNSMASQ DHCPACK рядків оброблено: "
+        f"{dhcp_line_stats.dnsmasq_processed}"
+    )
+    print(
+        "⚠️ DNSMASQ DHCPACK рядків пропущено: "
+        f"{dhcp_line_stats.dnsmasq_skipped}"
+    )
     output_rel = output_path.relative_to(repo_root)
     print(
         "✅ Дані збережено до "
@@ -1200,8 +1425,8 @@ def parse_rds_timestamp(value: str) -> int:
     if not cleaned:
         raise ValueError("empty timestamp")
 
-    dt = datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S")
-    epoch = int((dt - datetime(1970, 1, 1)).total_seconds())
+    dt = datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC_TZ)
+    epoch = int(dt.timestamp())
     return epoch
 
 
