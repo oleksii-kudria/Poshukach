@@ -130,6 +130,8 @@ class DhcpLineStats:
     skipped_client_rows: int = 0
     dnsmasq_processed: int = 0
     dnsmasq_skipped: int = 0
+    unifi_processed: int = 0
+    unifi_skipped: int = 0
 
 
 @dataclass
@@ -687,6 +689,7 @@ DNSMASQ_DHCPACK_PATTERN = re.compile(
 )
 
 CEF_KEY_PATTERN = re.compile(r"([A-Za-z0-9]+)=")
+UNIFI_WIFI_CEF_TOKEN = "WiFi Client Connected"
 
 STANDARD_CLIENT_PATTERN = re.compile(
     r"^dhcp-client\s+on\s+[^\s]+\s+got\s+IP\s+address\s+[0-9.]+$",
@@ -1031,10 +1034,17 @@ def parse_cef_extension(extension: str) -> Dict[str, str]:
     return result
 
 
-def extract_cef_msg(payload: str) -> str | None:
+def extract_cef_extension(payload: str) -> str | None:
     try:
         _, _, _, _, _, _, _, extension = payload.split("|", 7)
     except ValueError:
+        return None
+    return extension
+
+
+def extract_cef_msg(payload: str) -> str | None:
+    extension = extract_cef_extension(payload)
+    if extension is None:
         return None
 
     fields = parse_cef_extension(extension)
@@ -1048,6 +1058,72 @@ def extract_cef_msg(payload: str) -> str | None:
         return None
 
     return msg.strip()
+
+
+def is_unifi_wifi_cef(payload: str) -> bool:
+    return "CEF:" in payload and UNIFI_WIFI_CEF_TOKEN in payload
+
+
+def parse_unifi_utc_time(utc_raw: str) -> str | None:
+    cleaned = utc_raw.strip()
+    if not cleaned:
+        return None
+
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(cleaned)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC_TZ)
+
+    kyiv_time = parsed.astimezone(KYIV_TZ)
+    epoch_ms = int(kyiv_time.timestamp() * 1000)
+    return str(epoch_ms)
+
+
+def parse_unifi_wifi_cef(
+    payload: str, *, stats: DhcpLineStats | None = None
+) -> Tuple[str, str, str, str | None] | None:
+    extension = extract_cef_extension(payload)
+    if extension is None:
+        if stats:
+            stats.unifi_skipped += 1
+        print(
+            "⚠️ Неможливо розпарсити UniFi WiFi CEF рядок payloadAsUTF: "
+            f"{payload}"
+        )
+        return None
+
+    fields = parse_cef_extension(extension)
+    ip = (fields.get("unificlientip") or "").strip()
+    mac_raw = (fields.get("unificonnectedtodevicemac") or "").strip()
+    name_raw = (fields.get("unificlienthostname") or "").strip()
+
+    if not ip or not mac_raw:
+        if stats:
+            stats.unifi_skipped += 1
+        print(
+            "⚠️ Неможливо розпарсити UniFi WiFi CEF рядок payloadAsUTF: "
+            f"{payload}"
+        )
+        return None
+
+    mac = normalise_mac_address(mac_raw)
+    name = name_raw if name_raw else "unknown"
+
+    epoch_raw = None
+    unifi_utc = fields.get("unifiutctime")
+    if unifi_utc:
+        epoch_raw = parse_unifi_utc_time(unifi_utc)
+
+    if stats:
+        stats.unifi_processed += 1
+
+    return ip, mac, name, epoch_raw
 
 
 def parse_cef_payload(payload: str) -> Tuple[str, str, str] | None:
@@ -1164,23 +1240,41 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
                     continue
 
                 dnsmasq_detected = is_dnsmasq_dhcpack(payload)
-                if dnsmasq_detected:
+                unifi_detected = is_unifi_wifi_cef(payload)
+                if unifi_detected:
+                    parsed_unifi = parse_unifi_wifi_cef(
+                        payload, stats=dhcp_line_stats
+                    )
+                    if not parsed_unifi:
+                        skipped_payload_rows += 1
+                        continue
+                    ip, payload_mac, name, unifi_epoch = parsed_unifi
+                    if unifi_epoch:
+                        epoch_raw = unifi_epoch
+                elif dnsmasq_detected:
                     parsed = parse_dnsmasq_dhcpack(payload, stats=dhcp_line_stats)
+                    if not parsed:
+                        skipped_payload_rows += 1
+                        continue
+                    ip, payload_mac, name = parsed
                 elif "CEF:" in payload:
                     parsed = parse_payload(payload, stats=dhcp_line_stats)
+                    if not parsed:
+                        print(f"⚠️ Неможливо розпарсити рядок payloadAsUTF: {payload}")
+                        skipped_payload_rows += 1
+                        continue
+                    ip, payload_mac, name = parsed
                 else:
                     body = extract_standard_body(payload, stats=dhcp_line_stats)
                     if should_skip_standard_client_body(body):
                         dhcp_line_stats.skipped_client_rows += 1
                         continue
                     parsed = parse_standard_body(body)
-                if not parsed:
-                    if not dnsmasq_detected:
+                    if not parsed:
                         print(f"⚠️ Неможливо розпарсити рядок payloadAsUTF: {payload}")
-                    skipped_payload_rows += 1
-                    continue
-
-                ip, payload_mac, name = parsed
+                        skipped_payload_rows += 1
+                        continue
+                    ip, payload_mac, name = parsed
 
                 if payload_mac != mac:
                     mac = payload_mac
@@ -1287,6 +1381,14 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
     print(
         "⚠️ DNSMASQ DHCPACK рядків пропущено: "
         f"{dhcp_line_stats.dnsmasq_skipped}"
+    )
+    print(
+        "✅ UniFi WiFi CEF подій оброблено: "
+        f"{dhcp_line_stats.unifi_processed}"
+    )
+    print(
+        "⚠️ UniFi WiFi CEF подій пропущено: "
+        f"{dhcp_line_stats.unifi_skipped}"
     )
     output_rel = output_path.relative_to(repo_root)
     print(
