@@ -1100,7 +1100,7 @@ def parse_unifi_wifi_cef(
 
     fields = parse_cef_extension(extension)
     ip = (fields.get("unificlientip") or "").strip()
-    mac_raw = (fields.get("unificonnectedtodevicemac") or "").strip()
+    mac_raw = (fields.get("unificlientmac") or "").strip()
     name_raw = (fields.get("unificlienthostname") or "").strip()
 
     if not ip or not mac_raw:
