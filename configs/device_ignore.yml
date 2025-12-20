@@ -40,8 +40,14 @@ rules:
 
 - mode: vendor
   patterns:
+    - "Ajax Systems DMCC"
     - "Apple, Inc."
     - "Cisco Systems, Inc"
+    - "CLOUD NETWORK TECHNOLOGY SINGAPORE PTE. LTD."
+    - "HUAWEI TECHNOLOGIES CO.,LTD"
+    - "MERCURY COMMUNICATION TECHNOLOGIES CO.,LTD."
+    - "MERCUSYS TECHNOLOGIES CO., LTD."
+    - "Motorola Mobility LLC, a Lenovo Company"
     - "Garmin International"
     - "Honor Device Co., Ltd."
     - "HUAWEI TECHNOLOGIES CO.,LTD"
@@ -54,10 +60,11 @@ rules:
     - "Motorola(Wuhan) Mobility Technologies Communication Co.,Ltd"
     - "Motorola (Wuhan) Mobility Technologies Communication Co., Ltd."
     - "Netis Technology Co., Ltd."
+    - "OnePlus Technology (Shenzhen) Co., Ltd"
     - "Routerboard.com"
     - "Samsung Electronics Co.,Ltd"
-    - "SHENZHEN YUNJI INTELLIGENT TECHNOLOGY CO.,LTD"
     - "Shenzhen Water World Information Co.,Ltd."
+    - "SHENZHEN YUNJI INTELLIGENT TECHNOLOGY CO.,LTD"
     - "TECNO MOBILE LIMITED"
     - "Tenda Technology Co.,Ltd.Dongguan branch"
     - "TP-LINK TECHNOLOGIES CO.,LTD."
@@ -66,6 +73,9 @@ rules:
     - "vivo Mobile Communication Co., Ltd."
     - "Xerox Corporation"
     - "Xiaomi Communications Co Ltd"
+    - "Zhejiang Dahua Technology Co., Ltd."
+    - "zte corporation"
+
 
 - mode: vendor
   patterns:
