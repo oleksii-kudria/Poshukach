@@ -7,7 +7,7 @@ rules:
   patterns:
     - "Beijing Xiaomi Mobile Software Co., Ltd"
     - "Cisco Systems, Inc"
-    - "CLOUD NETWORK TECHNOLOGY SINGAPORE PTE. LTD."
+    # - "CLOUD NETWORK TECHNOLOGY SINGAPORE PTE. LTD."
     - "MERCURY COMMUNICATION TECHNOLOGIES CO.,LTD."
     - "MERCUSYS TECHNOLOGIES CO., LTD."
     - "Mercury Systems – Trusted Mission Solutions, Inc."
