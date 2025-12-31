@@ -108,3 +108,67 @@ def test_run_dhcp_aggregation_prefers_device_time_when_available(
     assert row["dateList"] == "1755006684895"
     assert row["firstDate"] == "2025.08.12 16:51"
     assert row["lastDate"] == "2025.08.12 16:51"
+
+
+def test_run_dhcp_aggregation_alt_columns_with_payload_detection(
+    tmp_path: pathlib.Path, capsys
+) -> None:
+    repo_root = tmp_path
+    dhcp_dir = repo_root / "data" / "raw" / "dhcp"
+    dhcp_dir.mkdir(parents=True, exist_ok=True)
+
+    dhcp_file = dhcp_dir / "alt_columns.csv"
+    dhcp_file.write_text(
+        (
+            "Log Source Identifier,Source MAC,custom1,,Log Source Time\n"
+            '"10.0.0.20","AA:BB:CC:DD:EE:FF",'
+            '"DHCP,INFO defconf assigned 192.168.10.5 for AA:BB:CC:DD:EE:FF Laptop",,'
+            '"Dec 31, 2025, 1:32:58 PM"\n'
+        ),
+        encoding="utf-8",
+    )
+
+    result = psh.run_dhcp_aggregation(repo_root)
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert 'payloadAsUTF визначено як стовпчик "custom1"' in captured.out
+
+    output_path = repo_root / "data" / "interim" / "dhcp.csv"
+    with output_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["mac"] == "AA:BB:CC:DD:EE:FF"
+    assert row["firstDateEpoch"] == "1767180778000"
+    assert row["lastDateEpoch"] == "1767180778000"
+    assert row["dateList"] == "1767180778000"
+    assert row["source"] == "10.0.0.20"
+
+
+def test_run_dhcp_aggregation_alt_columns_missing_payload_detection(
+    tmp_path: pathlib.Path, capsys
+) -> None:
+    repo_root = tmp_path
+    dhcp_dir = repo_root / "data" / "raw" / "dhcp"
+    dhcp_dir.mkdir(parents=True, exist_ok=True)
+
+    dhcp_file = dhcp_dir / "alt_columns_invalid.csv"
+    dhcp_file.write_text(
+        (
+            "Log Source Identifier,Source MAC,custom1,Log Source Time\n"
+            '"10.0.0.20","AA:BB:CC:DD:EE:FF","unrelated text","Dec 31, 2025, 1:32:58 PM"\n'
+        ),
+        encoding="utf-8",
+    )
+
+    result = psh.run_dhcp_aggregation(repo_root)
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert (
+        "Не вдалося визначити payloadAsUTF: жоден стовпчик не містить \"dhcp,info\" у файлі"
+        in captured.out
+    )
