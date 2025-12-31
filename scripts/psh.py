@@ -701,7 +701,7 @@ PREFIXED_DHCP_PATTERN = re.compile(
 DHCP_INFO_PREFIX_PATTERN = re.compile(r"(?i)^dhcp,info\s+")
 
 DHCP_ASSIGNMENT_PATTERN = re.compile(
-    r"^(?P<dhcpName>[^\s:]+)\s+assigned\s+"
+    r"^(?P<dhcpName>.+?)\s+assigned\s+"
     r"(?P<ip>\d{1,3}(?:\.\d{1,3}){3})\s+"
     r"(?:for|to)\s+"
     r"(?P<mac>[0-9A-Fa-f:.-]{2,})(?:\s+(?P<name>.+))?$",
