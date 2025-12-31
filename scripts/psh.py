@@ -135,6 +135,18 @@ class DhcpLineStats:
 
 
 @dataclass
+class DhcpColumnMapping:
+    source_index: int
+    mac_index: int
+    payload_index: int
+    time_index: int
+    time_column_name: str
+    use_log_source_time: bool
+    payload_column_name: str
+    is_alternative_mapping: bool
+
+
+@dataclass
 class VendorRuleStats:
     config_label: str
     applied: int = 0
@@ -1197,6 +1209,90 @@ def detect_time_column(header_map: Dict[str, int]) -> str | None:
     return None
 
 
+def detect_payload_column(csv_path: Path, header: List[str]) -> str:
+    lowered_header = [column.lower() for column in header]
+    if "payloadasutf" in lowered_header:
+        return header[lowered_header.index("payloadasutf")]
+
+    try:
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            sample = handle.read(4096)
+            handle.seek(0)
+            dialect = sniff_dialect(sample)
+            reader = csv.DictReader(handle, fieldnames=header, dialect=dialect)
+            next(reader, None)
+
+            for row in reader:
+                if row is None:
+                    continue
+
+                for column in header:
+                    value = (row.get(column) or "").lower()
+                    if "dhcp,info" in value:
+                        return column
+    except OSError as exc:  # pragma: no cover - filesystem error
+        raise OSError(f"Помилка читання файлу: {exc}") from exc
+
+    raise ValueError(
+        f"Не вдалося визначити payloadAsUTF: жоден стовпчик не містить \"dhcp,info\" у файлі {csv_path}"
+    )
+
+
+def build_dhcp_column_mapping(csv_path: Path, header: List[str]) -> DhcpColumnMapping:
+    header_map = build_header_map(header)
+
+    time_column = detect_time_column(header_map)
+    if time_column is None:
+        raise ValueError(
+            f"Відсутні часові поля deviceTime та Log Source Time у файлі {csv_path}"
+        )
+
+    has_standard_fields = all(field.lower() in header_map for field in MANDATORY_FIELDS)
+    use_log_source_time = "devicetime" not in header_map and time_column == "log source time"
+
+    if use_log_source_time and not has_standard_fields:
+        payload_column = detect_payload_column(csv_path, header)
+        payload_index = header.index(payload_column)
+        source_column = "log source identifier"
+        mac_column = "source mac"
+
+        if source_column not in header_map or mac_column not in header_map:
+            missing = []
+            if source_column not in header_map:
+                missing.append("Log Source Identifier")
+            if mac_column not in header_map:
+                missing.append("Source MAC")
+            raise ValueError(f"Відсутні поля: {', '.join(missing)}")
+
+        return DhcpColumnMapping(
+            source_index=header_map[source_column],
+            mac_index=header_map[mac_column],
+            payload_index=payload_index,
+            time_index=header_map[time_column],
+            time_column_name=time_column,
+            use_log_source_time=True,
+            payload_column_name=payload_column,
+            is_alternative_mapping=True,
+        )
+
+    missing = [field for field in MANDATORY_FIELDS if field.lower() not in header_map]
+    if missing:
+        raise ValueError(f"Відсутні поля: {', '.join(missing)}")
+
+    payload_column = header[[column.lower() for column in header].index("payloadasutf")]
+
+    return DhcpColumnMapping(
+        source_index=header_map["logsourceidentifier"],
+        mac_index=header_map["sourcmacaddress"],
+        payload_index=header_map["payloadasutf"],
+        time_index=header_map[time_column],
+        time_column_name=time_column,
+        use_log_source_time=use_log_source_time,
+        payload_column_name=payload_column,
+        is_alternative_mapping=False,
+    )
+
+
 def read_rows(csv_path: Path, header: List[str]) -> Iterable[List[str]]:
     try:
         with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -1231,28 +1327,21 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
 
         try:
             header = read_csv_header(file_path)
+            mapping = build_dhcp_column_mapping(file_path, header)
         except (OSError, ValueError) as exc:
             print(f"❌ Виявлено помилки структури CSV у {rel_path}")
-            print(str(exc))
+            message = str(exc).replace(str(file_path), str(rel_path))
+            print(message)
             print("\nЗупинка обробки.")
             return 1
 
-        header_map = build_header_map(header)
-        missing = [field for field in MANDATORY_FIELDS if field.lower() not in header_map]
-        if missing:
-            print(f"❌ Виявлено помилки структури CSV у {rel_path}")
-            print(f"Відсутні поля: {', '.join(missing)}")
-            print("\nЗупинка обробки.")
-            return 1
-
-        time_column = detect_time_column(header_map)
-        if time_column is None:
+        if mapping.is_alternative_mapping:
+            payload_column_log = mapping.payload_column_name or "(без назви)"
             print(
-                "❌ Відсутні часові поля deviceTime та Log Source Time "
-                f"у файлі {rel_path}"
+                f"🔧 Файл {rel_path}: використано Log Source Time, "
+                "мапінг полів застосовано, payloadAsUTF визначено як стовпчик "
+                f"\"{payload_column_log}\""
             )
-            print("\nЗупинка обробки.")
-            return 1
 
         try:
             for row in read_rows(file_path, header):
@@ -1260,10 +1349,10 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
                     continue
 
                 try:
-                    source = row[header_map["logsourceidentifier"]].strip()
-                    mac = row[header_map["sourcmacaddress"]].strip().upper()
-                    payload = row[header_map["payloadasutf"]].strip()
-                    epoch_raw = row[header_map[time_column]].strip()
+                    source = row[mapping.source_index].strip()
+                    mac = row[mapping.mac_index].strip().upper()
+                    payload = row[mapping.payload_index].strip()
+                    epoch_raw = row[mapping.time_index].strip()
                 except IndexError as exc:
                     raise ValueError("Рядок має менше значень, ніж очікується") from exc
 
@@ -1315,7 +1404,8 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
                     mac = payload_mac
 
                 use_log_source_time = (
-                    time_column == "log source time" and not epoch_raw.isdigit()
+                    mapping.use_log_source_time
+                    or mapping.time_column_name == "log source time" and not epoch_raw.isdigit()
                 )
                 if use_log_source_time:
                     epoch_value, seconds = parse_log_source_time(epoch_raw)
