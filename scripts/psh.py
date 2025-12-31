@@ -60,6 +60,20 @@ CONSOLE_SEPARATOR = "--------------------------------------------"
 DeviceRule = Tuple[str, List[object]]
 
 
+def set_max_csv_field_size() -> None:
+    """Increase the CSV field size limit to handle large aggregated fields."""
+
+    max_int = sys.maxsize
+    while max_int > 0:
+        try:
+            csv.field_size_limit(max_int)
+            break
+        except OverflowError:
+            max_int //= 10
+    else:
+        raise OverflowError("Unable to set CSV field size limit")
+
+
 @dataclass
 class VendorPattern:
     value: str
@@ -2615,6 +2629,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: List[str] | None = None) -> int:
+    set_max_csv_field_size()
     repo_root = Path(__file__).resolve().parent.parent
     parser = build_parser()
     args = parser.parse_args(argv)
