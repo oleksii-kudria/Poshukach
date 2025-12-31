@@ -665,8 +665,8 @@ MANDATORY_FIELDS: List[str] = [
     "logSourceIdentifier",
     "sourcMACAddress",
     "payloadAsUTF",
-    "deviceTime",
 ]
+TIME_FIELDS: List[str] = ["deviceTime", "Log Source Time"]
 
 PREFIXED_DHCP_PATTERN = re.compile(
     r"(?i)^dhcp,info\s+([^:]+):\s+(?P<body>.*)$"
@@ -854,11 +854,29 @@ def parse_epoch(epoch_raw: str) -> Tuple[int, float]:
 
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
 UTC_TZ = ZoneInfo("UTC")
+LOG_SOURCE_TIME_FORMAT = "%b %d, %Y, %I:%M:%S %p"
 
 
 def epoch_to_str(seconds: float) -> str:
     dt = datetime.fromtimestamp(seconds, tz=UTC_TZ).astimezone(KYIV_TZ)
     return dt.strftime("%Y.%m.%d %H:%M")
+
+
+def parse_log_source_time(value: str) -> Tuple[int, float]:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("Рядок містить порожні обовʼязкові поля")
+
+    try:
+        dt = datetime.strptime(cleaned, LOG_SOURCE_TIME_FORMAT)
+    except ValueError as exc:
+        raise ValueError(f"Некоректний формат Log Source Time: {value}") from exc
+
+    dt = dt.replace(tzinfo=KYIV_TZ)
+    seconds = dt.timestamp()
+    milliseconds = int(round(seconds * 1000))
+    normalized_seconds = milliseconds / 1000
+    return milliseconds, normalized_seconds
 
 
 def is_randomized_mac(mac: str) -> bool:
@@ -1171,6 +1189,14 @@ def build_header_map(header: List[str]) -> Dict[str, int]:
     return lowered
 
 
+def detect_time_column(header_map: Dict[str, int]) -> str | None:
+    for field in TIME_FIELDS:
+        key = field.lower()
+        if key in header_map:
+            return key
+    return None
+
+
 def read_rows(csv_path: Path, header: List[str]) -> Iterable[List[str]]:
     try:
         with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -1219,6 +1245,15 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
             print("\nЗупинка обробки.")
             return 1
 
+        time_column = detect_time_column(header_map)
+        if time_column is None:
+            print(
+                "❌ Відсутні часові поля deviceTime та Log Source Time "
+                f"у файлі {rel_path}"
+            )
+            print("\nЗупинка обробки.")
+            return 1
+
         try:
             for row in read_rows(file_path, header):
                 if not row:
@@ -1228,7 +1263,7 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
                     source = row[header_map["logsourceidentifier"]].strip()
                     mac = row[header_map["sourcmacaddress"]].strip().upper()
                     payload = row[header_map["payloadasutf"]].strip()
-                    epoch_raw = row[header_map["devicetime"]].strip()
+                    epoch_raw = row[header_map[time_column]].strip()
                 except IndexError as exc:
                     raise ValueError("Рядок має менше значень, ніж очікується") from exc
 
@@ -1279,7 +1314,14 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
                 if payload_mac != mac:
                     mac = payload_mac
 
-                epoch_value, seconds = parse_epoch(epoch_raw)
+                use_log_source_time = (
+                    time_column == "log source time" and not epoch_raw.isdigit()
+                )
+                if use_log_source_time:
+                    epoch_value, seconds = parse_log_source_time(epoch_raw)
+                    epoch_raw = str(epoch_value)
+                else:
+                    epoch_value, seconds = parse_epoch(epoch_raw)
 
                 aggregation = aggregations.setdefault(mac, MacAggregation(mac))
                 aggregation.add_entry(
