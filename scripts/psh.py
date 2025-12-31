@@ -1219,17 +1219,18 @@ def detect_payload_column(csv_path: Path, header: List[str]) -> str:
             sample = handle.read(4096)
             handle.seek(0)
             dialect = sniff_dialect(sample)
-            reader = csv.DictReader(handle, fieldnames=header, dialect=dialect)
+            reader = csv.reader(handle, dialect)
             next(reader, None)
 
             for row in reader:
-                if row is None:
+                if not row:
                     continue
 
-                for column in header:
-                    value = (row.get(column) or "").lower()
-                    if "dhcp,info" in value:
-                        return column
+                for index, value in enumerate(row):
+                    if "dhcp,info" in (value or "").lower():
+                        if index < len(header):
+                            return header[index]
+                        return ""
     except OSError as exc:  # pragma: no cover - filesystem error
         raise OSError(f"Помилка читання файлу: {exc}") from exc
 
