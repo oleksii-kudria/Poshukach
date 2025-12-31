@@ -30,6 +30,18 @@ def test_parse_payload_supports_various_server_names():
             "dhcp,info wifi_dhcp assigned 192.168.10.22 to 00:11:22:33:44:55   tablet  ",
             ("192.168.10.22", "00:11:22:33:44:55", "tablet"),
         ),
+        (
+            "dhcp,info верхній ряд DHCP assigned 192.168.55.159 for EE:33:52:11:49:91",
+            ("192.168.55.159", "EE:33:52:11:49:91", "unknown"),
+        ),
+        (
+            "dhcp,info нижній ряд DHCP assigned 192.168.99.240 for 00:22:44:91:95:52 Ariba",
+            ("192.168.99.240", "00:22:44:91:95:52", "Ariba"),
+        ),
+        (
+            "dhcp,info Home DHCP assigned 192.168.10.11 for 7E:44:02:44:6D:44",
+            ("192.168.10.11", "7E:44:02:44:6D:44", "unknown"),
+        ),
     ]
 
     for payload, expected in samples:
