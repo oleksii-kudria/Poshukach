@@ -134,3 +134,14 @@ def test_parse_payload_sets_unknown_name_for_dnsmasq_without_hostname():
     parsed = psh.parse_payload(payload)
 
     assert parsed == ("192.168.2.200", "60:22:32:21:22:19", "unknown")
+
+
+def test_parse_fortigate_payload_supports_dhcp_ack() -> None:
+    payload = (
+        '<190>logver=706063652 devid="FG123" logdesc="DHCP Ack log" '
+        'mac="22:22:22:33:33:77" ip="172.17.0.5" hostname="Mikrotik"'
+    )
+
+    parsed = psh.parse_fortigate_payload(payload)
+
+    assert parsed == ("172.17.0.5", "22:22:22:33:33:77", "Mikrotik")

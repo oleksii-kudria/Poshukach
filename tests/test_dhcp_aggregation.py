@@ -215,3 +215,42 @@ def test_run_dhcp_aggregation_alt_columns_missing_payload_detection(
         "Не вдалося визначити payloadAsUTF: жоден стовпчик не містить \"dhcp,info\" у файлі"
         in captured.out
     )
+
+
+def test_run_dhcp_aggregation_supports_fortigate_start_time_and_empty_payload_header(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo_root = tmp_path
+    dhcp_dir = repo_root / "data" / "raw" / "dhcp"
+    dhcp_dir.mkdir(parents=True, exist_ok=True)
+
+    dhcp_file = dhcp_dir / "fortigate.csv"
+    dhcp_file.write_text(
+        (
+            "Device Name (custom),Start Time,Log Source Identifier,\n"
+            '"FG123123","Apr 8, 2026, 11:01:51 AM","10.10.10.10",'
+            '"<190>logver=706063652 logdesc=""DHCP Ack log"" mac=""22:22:22:33:33:77"" '
+            'ip=""172.17.0.5"" hostname=""Mikrotik"""'
+            "\n"
+        ),
+        encoding="utf-8",
+    )
+
+    expected_epoch, _ = psh.parse_log_source_time("Apr 8, 2026, 11:01:51 AM")
+
+    result = psh.run_dhcp_aggregation(repo_root)
+
+    assert result == 0
+    output_path = repo_root / "data" / "interim" / "dhcp.csv"
+    with output_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["source"] == "10.10.10.10"
+    assert row["mac"] == "22:22:22:33:33:77"
+    assert row["ip"] == "172.17.0.5"
+    assert row["name"] == "Mikrotik"
+    assert row["firstDateEpoch"] == str(expected_epoch)
+    assert row["lastDateEpoch"] == str(expected_epoch)
