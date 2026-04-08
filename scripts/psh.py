@@ -151,13 +151,14 @@ class DhcpLineStats:
 @dataclass
 class DhcpColumnMapping:
     source_index: int
-    mac_index: int
+    mac_index: int | None
     payload_index: int
     time_index: int
     time_column_name: str
     use_log_source_time: bool
     payload_column_name: str
     is_alternative_mapping: bool
+    is_fortigate_mapping: bool = False
 
 
 @dataclass
@@ -692,7 +693,7 @@ MANDATORY_FIELDS: List[str] = [
     "sourcMACAddress",
     "payloadAsUTF",
 ]
-TIME_FIELDS: List[str] = ["deviceTime", "Log Source Time"]
+TIME_FIELDS: List[str] = ["deviceTime", "Log Source Time", "Start Time"]
 
 PREFIXED_DHCP_PATTERN = re.compile(
     r"(?i)^dhcp,info\s+([^:]+):\s+(?P<body>.*)$"
@@ -713,6 +714,8 @@ DNSMASQ_DHCPACK_PATTERN = re.compile(
     r"(?P<mac>(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})(?:\s+(?P<name>\S.+))?$",
     re.IGNORECASE,
 )
+FORTIGATE_DHCP_ACK_MARKER = 'logdesc="DHCP Ack log"'
+FORTIGATE_FIELD_PATTERN = re.compile(r'(?P<key>mac|ip|hostname)="(?P<value>[^"]*)"', re.IGNORECASE)
 
 CEF_KEY_PATTERN = re.compile(r"([A-Za-z0-9]+)=")
 UNIFI_WIFI_CEF_TOKEN = "WiFi Client Connected"
@@ -1060,6 +1063,29 @@ def parse_dnsmasq_dhcpack(
     return ip, mac, name
 
 
+def is_fortigate_dhcp_ack(payload: str) -> bool:
+    return FORTIGATE_DHCP_ACK_MARKER.lower() in payload.lower()
+
+
+def parse_fortigate_payload(payload: str) -> Tuple[str, str, str] | None:
+    if not is_fortigate_dhcp_ack(payload):
+        return None
+
+    extracted: Dict[str, str] = {}
+    for match in FORTIGATE_FIELD_PATTERN.finditer(payload):
+        extracted[match.group("key").lower()] = match.group("value").strip()
+
+    ip = extracted.get("ip", "")
+    mac_raw = extracted.get("mac", "")
+    hostname = extracted.get("hostname", "")
+    if not ip or not mac_raw:
+        return None
+
+    mac = normalise_mac_address(mac_raw)
+    name = clean_device_name(hostname, ip=ip, mac=mac)
+    return ip, mac, name
+
+
 def parse_cef_extension(extension: str) -> Dict[str, str]:
     result: Dict[str, str] = {}
     if not extension:
@@ -1241,7 +1267,8 @@ def detect_payload_column(csv_path: Path, header: List[str]) -> str:
                     continue
 
                 for index, value in enumerate(row):
-                    if "dhcp,info" in (value or "").lower():
+                    lowered_value = (value or "").lower()
+                    if "dhcp,info" in lowered_value or FORTIGATE_DHCP_ACK_MARKER.lower() in lowered_value:
                         if index < len(header):
                             return header[index]
                         return ""
@@ -1263,31 +1290,34 @@ def build_dhcp_column_mapping(csv_path: Path, header: List[str]) -> DhcpColumnMa
         )
 
     has_standard_fields = all(field.lower() in header_map for field in MANDATORY_FIELDS)
-    use_log_source_time = "devicetime" not in header_map and time_column == "log source time"
+    use_log_source_time = "devicetime" not in header_map and time_column in {"log source time", "start time"}
+    source_column = "log source identifier"
+    is_fortigate_mapping = time_column == "start time" and source_column in header_map
 
     if use_log_source_time and not has_standard_fields:
         payload_column = detect_payload_column(csv_path, header)
         payload_index = header.index(payload_column)
-        source_column = "log source identifier"
         mac_column = "source mac"
 
-        if source_column not in header_map or mac_column not in header_map:
+        if source_column not in header_map:
+            raise ValueError("Відсутні поля: Log Source Identifier")
+
+        if not is_fortigate_mapping and mac_column not in header_map:
             missing = []
-            if source_column not in header_map:
-                missing.append("Log Source Identifier")
             if mac_column not in header_map:
                 missing.append("Source MAC")
             raise ValueError(f"Відсутні поля: {', '.join(missing)}")
 
         return DhcpColumnMapping(
             source_index=header_map[source_column],
-            mac_index=header_map[mac_column],
+            mac_index=header_map[mac_column] if mac_column in header_map else None,
             payload_index=payload_index,
             time_index=header_map[time_column],
             time_column_name=time_column,
             use_log_source_time=True,
             payload_column_name=payload_column,
             is_alternative_mapping=True,
+            is_fortigate_mapping=is_fortigate_mapping,
         )
 
     missing = [field for field in MANDATORY_FIELDS if field.lower() not in header_map]
@@ -1305,6 +1335,7 @@ def build_dhcp_column_mapping(csv_path: Path, header: List[str]) -> DhcpColumnMa
         use_log_source_time=use_log_source_time,
         payload_column_name=payload_column,
         is_alternative_mapping=False,
+        is_fortigate_mapping=False,
     )
 
 
@@ -1365,13 +1396,13 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
 
                 try:
                     source = row[mapping.source_index].strip()
-                    mac = row[mapping.mac_index].strip().upper()
+                    mac = row[mapping.mac_index].strip().upper() if mapping.mac_index is not None else ""
                     payload = row[mapping.payload_index].strip()
                     epoch_raw = row[mapping.time_index].strip()
                 except IndexError as exc:
                     raise ValueError("Рядок має менше значень, ніж очікується") from exc
 
-                if not mac or not payload or not epoch_raw:
+                if not payload or not epoch_raw:
                     raise ValueError("Рядок містить порожні обовʼязкові поля")
 
                 if should_skip_cef_client_message(payload):
@@ -1396,6 +1427,13 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
                         skipped_payload_rows += 1
                         continue
                     ip, payload_mac, name = parsed
+                elif is_fortigate_dhcp_ack(payload):
+                    parsed = parse_fortigate_payload(payload)
+                    if not parsed:
+                        print(f"⚠️ Неможливо розпарсити рядок payloadAsUTF: {payload}")
+                        skipped_payload_rows += 1
+                        continue
+                    ip, payload_mac, name = parsed
                 elif "CEF:" in payload:
                     parsed = parse_payload(payload, stats=dhcp_line_stats)
                     if not parsed:
@@ -1415,7 +1453,7 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
                         continue
                     ip, payload_mac, name = parsed
 
-                if payload_mac != mac:
+                if not mac or payload_mac != mac:
                     mac = payload_mac
 
                 use_log_source_time = (

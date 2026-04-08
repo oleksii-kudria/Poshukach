@@ -1,0 +1,2 @@
+"Device Name (custom)","Start Time","Log Source Identifier",""
+"FG123123","Apr 8, 2026, 11:01:51 AM","10.10.10.10","<190>logver=706063652 devid=\"FG123123\" logdesc=\"DHCP Ack log\" mac=\"22:22:22:33:33:77\" ip=\"172.17.0.5\" hostname=\"Mikrotik\""
