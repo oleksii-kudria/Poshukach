@@ -1,7 +1,7 @@
 rules:
 - mode: regex
   patterns:
-    - "^[gisy][0-9]{9}$"
+    - "^[gisyw][0-9]{9}$"
 
 - mode: vendor
   patterns:
@@ -19,6 +19,7 @@ rules:
 
 - mode: vendor
   patterns:
+    - "TP-LINK TECHNOLOGIES CO.,LTD."
     - "TP-Link Systems Inc"
   except:
     name_regex: ["^(WS-|DESKTOP|LAPTOP|PC|WIN-|DESKTOP-)", "(?i)MacBook|iPhone|Android"]
