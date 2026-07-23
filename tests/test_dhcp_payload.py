@@ -145,3 +145,75 @@ def test_parse_fortigate_payload_supports_dhcp_ack() -> None:
     parsed = psh.parse_fortigate_payload(payload)
 
     assert parsed == ("172.17.0.5", "22:22:22:33:33:77", "Mikrotik")
+
+
+def test_parse_fortigate_payload_supports_unquoted_ip() -> None:
+    payload = (
+        '<190>logdesc="DHCP Ack log" mac="AA:BB:CC:DD:EE:FF" '
+        'ip=192.0.2.117 lease=604800 hostname="Example"'
+    )
+
+    assert psh.parse_fortigate_payload(payload) == (
+        "192.0.2.117",
+        "AA:BB:CC:DD:EE:FF",
+        "Example",
+    )
+
+
+def test_parse_fortigate_payload_supports_arbitrary_field_order() -> None:
+    payload = (
+        'hostname="Example Device" reporting_ip=203.0.113.10 devname="FG-EXAMPLE" '
+        'ip=192.0.2.117 dhcp_msg="Ack" mac="aa-bb-cc-dd-ee-ff"'
+    )
+
+    assert psh.parse_fortigate_payload(payload) == (
+        "192.0.2.117",
+        "AA:BB:CC:DD:EE:FF",
+        "Example Device",
+    )
+
+
+def test_parse_fortigate_payload_normalises_na_hostname() -> None:
+    payload = (
+        '<190>logdesc="DHCP Ack log" mac="AA:BB:CC:DD:EE:FF" '
+        'ip=192.0.2.117 hostname="N/A"'
+    )
+
+    assert psh.parse_fortigate_payload(payload) == (
+        "192.0.2.117",
+        "AA:BB:CC:DD:EE:FF",
+        "unknown",
+    )
+
+
+def test_parse_fortigate_full_unquoted_ip_payload() -> None:
+    payload = (
+        '<190>reporting_ip=203.0.113.10 logver=700190696 timestamp=1784799358 '
+        'date=2026-07-23 time=12:35:58 eventtime=1784799358701506800 tz="+0300" '
+        'logid="0100026001" type="event" subtype="system" level="information" vd="root" '
+        'logdesc="DHCP Ack log" interface="internal" dhcp_msg="Ack" '
+        'mac="AA:BB:CC:DD:EE:FF" ip=192.0.2.117 lease=604800 hostname="N/A" '
+        'msg="DHCP server sends a DHCPACK" devname="FG-60F-EXAMPLE" '
+        'devid="FGT60FXXXXXXXXX"'
+    )
+
+    assert psh.parse_fortigate_payload(payload) == (
+        "192.0.2.117",
+        "AA:BB:CC:DD:EE:FF",
+        "unknown",
+    )
+
+
+def test_parse_fortigate_payload_rejects_invalid_required_values() -> None:
+    assert (
+        psh.parse_fortigate_payload(
+            'dhcp_msg="Ack" mac="not-a-mac" ip=192.0.2.117'
+        )
+        is None
+    )
+    assert (
+        psh.parse_fortigate_payload(
+            'dhcp_msg="Ack" mac="AA:BB:CC:DD:EE:FF" ip=192.0.2.999'
+        )
+        is None
+    )

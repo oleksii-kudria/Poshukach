@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import ipaddress
 import io
 import re
 import sys
@@ -714,8 +715,10 @@ DNSMASQ_DHCPACK_PATTERN = re.compile(
     r"(?P<mac>(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})(?:\s+(?P<name>\S.+))?$",
     re.IGNORECASE,
 )
-FORTIGATE_DHCP_ACK_MARKER = 'logdesc="DHCP Ack log"'
-FORTIGATE_FIELD_PATTERN = re.compile(r'(?P<key>mac|ip|hostname)="(?P<value>[^"]*)"', re.IGNORECASE)
+FORTIGATE_KEY_VALUE_PATTERN = re.compile(
+    r'(?<![A-Za-z0-9_.-])(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)='
+    r'(?:(?:"(?P<quoted>[^"]*)")|(?P<unquoted>\S*))'
+)
 
 CEF_KEY_PATTERN = re.compile(r"([A-Za-z0-9]+)=")
 UNIFI_WIFI_CEF_TOKEN = "WiFi Client Connected"
@@ -1020,6 +1023,9 @@ def clean_device_name(name: str | None, *, ip: str, mac: str) -> str:
     if not cleaned:
         return "unknown"
 
+    if cleaned.upper() == "N/A":
+        return "unknown"
+
     if cleaned.upper() == mac.upper() or cleaned == ip:
         return "unknown"
 
@@ -1063,17 +1069,30 @@ def parse_dnsmasq_dhcpack(
     return ip, mac, name
 
 
+def parse_fortigate_key_values(payload: str) -> Dict[str, str]:
+    """Parse quoted and whitespace-delimited FortiGate key-value fields."""
+    fields: Dict[str, str] = {}
+    for match in FORTIGATE_KEY_VALUE_PATTERN.finditer(payload):
+        value = match.group("quoted")
+        if value is None:
+            value = match.group("unquoted")
+        fields[match.group("key").lower()] = value
+    return fields
+
+
 def is_fortigate_dhcp_ack(payload: str) -> bool:
-    return FORTIGATE_DHCP_ACK_MARKER.lower() in payload.lower()
+    fields = parse_fortigate_key_values(payload)
+    return (
+        fields.get("logdesc", "").casefold() == "dhcp ack log"
+        or fields.get("dhcp_msg", "").casefold() == "ack"
+    )
 
 
 def parse_fortigate_payload(payload: str) -> Tuple[str, str, str] | None:
     if not is_fortigate_dhcp_ack(payload):
         return None
 
-    extracted: Dict[str, str] = {}
-    for match in FORTIGATE_FIELD_PATTERN.finditer(payload):
-        extracted[match.group("key").lower()] = match.group("value").strip()
+    extracted = parse_fortigate_key_values(payload)
 
     ip = extracted.get("ip", "")
     mac_raw = extracted.get("mac", "")
@@ -1082,6 +1101,12 @@ def parse_fortigate_payload(payload: str) -> Tuple[str, str, str] | None:
         return None
 
     mac = normalise_mac_address(mac_raw)
+    if not MAC_PATTERN.fullmatch(mac):
+        return None
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        return None
     name = clean_device_name(hostname, ip=ip, mac=mac)
     return ip, mac, name
 
@@ -1268,7 +1293,7 @@ def detect_payload_column(csv_path: Path, header: List[str]) -> str:
 
                 for index, value in enumerate(row):
                     lowered_value = (value or "").lower()
-                    if "dhcp,info" in lowered_value or FORTIGATE_DHCP_ACK_MARKER.lower() in lowered_value:
+                    if "dhcp,info" in lowered_value or is_fortigate_dhcp_ack(value):
                         if index < len(header):
                             return header[index]
                         return ""
@@ -1430,7 +1455,17 @@ def run_dhcp_aggregation(repo_root: Path, args: argparse.Namespace | None = None
                 elif is_fortigate_dhcp_ack(payload):
                     parsed = parse_fortigate_payload(payload)
                     if not parsed:
-                        print(f"⚠️ Неможливо розпарсити рядок payloadAsUTF: {payload}")
+                        fields = parse_fortigate_key_values(payload)
+                        missing = [key for key in ("mac", "ip") if not fields.get(key)]
+                        detail = (
+                            f"; відсутні поля: {', '.join(missing)}"
+                            if missing
+                            else "; невалідне значення mac або ip"
+                        )
+                        print(
+                            "⚠️ Неможливо розпарсити FortiGate DHCP ACK "
+                            f"рядок payloadAsUTF{detail}"
+                        )
                         skipped_payload_rows += 1
                         continue
                     ip, payload_mac, name = parsed
