@@ -22,15 +22,30 @@
 Add python.exe to PATH
 ```
 
+Після встановлення відкрийте командний рядок і перевірте доступність Python:
+
+```bat
+python3 --version
+```
+
 ### 3. Відкрийте командний рядок у папці проєкту
 
 Відкрийте розпаковану папку `Poshukach`, натисніть у рядку адреси Провідника, введіть `cmd` і натисніть **Enter**.
 
-### 4. Встановіть необхідний компонент
+### 4. Встановіть необхідні модулі
+
+Виконайте команду:
 
 ```bat
-py -m pip install PyYAML
+python3 -m pip install PyYAML tzdata
 ```
+
+Програмі потрібні:
+
+- `PyYAML` - для читання конфігураційних файлів YAML;
+- `tzdata` - для коректної роботи часових зон `Europe/Kyiv` та `UTC` у Windows.
+
+Інші модулі, які використовує програма, входять до стандартної бібліотеки Python і не потребують окремого встановлення.
 
 ### 5. Додайте вхідні файли
 
@@ -43,20 +58,12 @@ py -m pip install PyYAML
 
 Файли, назва яких закінчується на `.example.csv`, програма не обробляє.
 
-### 6. Завантажте довідник виробників MAC-адрес
+Довідник виробників MAC-адрес `data\cache\oui.csv` вже додано до репозиторію, тому перед першим запуском його не потрібно завантажувати окремо.
 
-Перед першим запуском виконайте:
-
-```bat
-py scripts\psh.py get_oui
-```
-
-Для завантаження довідника потрібне підключення до Інтернету. Файл буде збережено у `data\cache\oui.csv`.
-
-### 7. Запустіть аналіз
+### 6. Запустіть аналіз
 
 ```bat
-py scripts\psh.py
+python3 scripts\psh.py
 ```
 
 Результати будуть збережені у:
@@ -65,10 +72,10 @@ py scripts\psh.py
 data\result\
 ```
 
-### 8. Сформуйте текстові звіти
+### 7. Сформуйте текстові звіти
 
 ```bat
-py scripts\psh.py report
+python3 scripts\psh.py report
 ```
 
 Звіти будуть створені у:
@@ -140,6 +147,7 @@ Poshukach/
 │   │   ├── av-mac/
 │   │   └── rds/
 │   ├── cache/
+│   │   └── oui.csv
 │   ├── interim/
 │   ├── result/
 │   └── report/
@@ -156,7 +164,7 @@ Poshukach/
 |---|---|
 | `configs` | правила класифікації пристроїв |
 | `data\raw` | вхідні файли користувача |
-| `data\cache` | завантажений OUI-довідник |
+| `data\cache` | OUI-довідник виробників MAC-адрес |
 | `data\interim` | проміжні оброблені таблиці |
 | `data\result` | фінальні CSV-результати |
 | `data\report` | текстові звіти |
@@ -254,7 +262,7 @@ configs\device_network.yml
 Файли в папці `configs` мають формат YAML. Після зміни правил повторно запустіть основний аналіз:
 
 ```bat
-py scripts\psh.py
+python3 scripts\psh.py
 ```
 
 Перед редагуванням рекомендується створити резервну копію конфігураційного файла.
@@ -264,7 +272,7 @@ py scripts\psh.py
 Команда:
 
 ```bat
-py scripts\psh.py report
+python3 scripts\psh.py report
 ```
 
 створює окремий звіт для кожного джерела DHCP-журналів.
@@ -281,61 +289,55 @@ py scripts\psh.py report
 ## Доступні команди
 
 ```bat
-py scripts\psh.py --help
+python3 scripts\psh.py --help
 ```
 
 Показати доступні команди.
 
 ```bat
-py scripts\psh.py get_oui
-```
-
-Завантажити або оновити довідник виробників MAC-адрес.
-
-```bat
-py scripts\psh.py
+python3 scripts\psh.py
 ```
 
 Виконати повний аналіз DHCP-журналів і списків MAC-адрес.
 
 ```bat
-py scripts\psh.py dhcp-aggregate
+python3 scripts\psh.py dhcp-aggregate
 ```
 
 Обробити лише DHCP-журнали.
 
 ```bat
-py scripts\psh.py mac-scan
+python3 scripts\psh.py mac-scan
 ```
 
 Зібрати MAC-адреси з файлів антивірусних систем.
 
 ```bat
-py scripts\psh.py compare-dhcp-mac
+python3 scripts\psh.py compare-dhcp-mac
 ```
 
 Повторно виконати порівняння вже створених проміжних файлів.
 
 ```bat
-py scripts\psh.py rds
+python3 scripts\psh.py rds
 ```
 
 Обробити CSV-файли з `data\raw\rds\`.
 
 ```bat
-py scripts\psh.py report
+python3 scripts\psh.py report
 ```
 
 Створити текстові звіти.
 
-## Якщо команда `py` не працює
+## Якщо команда `python3` не працює
 
-Спробуйте ті самі команди, замінивши `py` на `python`:
+Переконайтеся, що Python встановлено з увімкненим параметром **Add python.exe to PATH**.
+
+У деяких версіях Windows команда інтерпретатора може називатися `python`. У такому разі використовуйте ті самі команди, замінивши `python3` на `python`:
 
 ```bat
-python -m pip install PyYAML
-python scripts\psh.py get_oui
+python -m pip install PyYAML tzdata
 python scripts\psh.py
+python scripts\psh.py report
 ```
-
-Якщо Windows повідомляє, що Python не знайдено, перевстановіть Python і позначте пункт **Add python.exe to PATH**.
