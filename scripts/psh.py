@@ -30,13 +30,13 @@ def _is_real_csv_file(path: Path) -> bool:
 
 
 def _iter_direct_dhcp_csv_files(dhcp_dir: Path):
-    """Return real DHCP CSV files and inspect CSV-named directories.
+    """Return normal direct CSV files plus CSVs from CSV-named directories.
 
-    A path such as ``data/raw/dhcp/export.csv`` may be either a regular file or
-    a directory created by an export/unpack workflow. Regular files keep the
-    existing behaviour. Directories whose names end with ``.csv`` are never
-    passed to the CSV parser; instead, real CSV files below them are discovered
-    recursively.
+    Normal direct-file discovery stays delegated to the original iterator.
+    Directory paths that the original ``glob("*.csv")`` also returns are
+    filtered out so they are never passed to the CSV parser. If such a path is
+    a directory whose name ends in ``.csv``, real CSV files below it are found
+    recursively and added to the input list.
     """
 
     if not dhcp_dir.exists():
@@ -45,32 +45,43 @@ def _iter_direct_dhcp_csv_files(dhcp_dir: Path):
     files = []
     seen = set()
 
-    for path in sorted(dhcp_dir.iterdir(), key=lambda item: item.name.casefold()):
-        if _is_real_csv_file(path):
-            resolved = path.resolve()
-            if resolved not in seen:
-                seen.add(resolved)
-                files.append(path)
+    for path in _ORIGINAL_ITER_DHCP_CSV_FILES(dhcp_dir):
+        if not _is_real_csv_file(path):
             continue
-
-        if not path.is_dir() or path.suffix.casefold() != ".csv":
+        resolved = path.resolve()
+        if resolved in seen:
             continue
+        seen.add(resolved)
+        files.append(path)
 
+    csv_named_directories = sorted(
+        (
+            path
+            for path in dhcp_dir.iterdir()
+            if path.is_dir() and path.suffix.casefold() == ".csv"
+        ),
+        key=lambda item: item.name.casefold(),
+    )
+
+    for directory in csv_named_directories:
         nested_files = sorted(
             (
                 nested
-                for nested in path.rglob("*")
+                for nested in directory.rglob("*")
                 if _is_real_csv_file(nested)
             ),
             key=lambda item: item.as_posix().casefold(),
         )
 
         if not nested_files:
-            print(f"⚠️ DHCP директорія {path.name}: CSV файли всередині відсутні")
+            print(
+                f"⚠️ DHCP директорія {directory.name}: "
+                "CSV файли всередині відсутні"
+            )
             continue
 
         print(
-            f"🔧 DHCP директорія {path.name}: "
+            f"🔧 DHCP директорія {directory.name}: "
             f"знайдено CSV файлів: {len(nested_files)}"
         )
         for nested in nested_files:
@@ -80,7 +91,7 @@ def _iter_direct_dhcp_csv_files(dhcp_dir: Path):
             seen.add(resolved)
             files.append(nested)
 
-    return files
+    return sorted(files, key=lambda path: path.as_posix().casefold())
 
 
 def iter_dhcp_csv_files(dhcp_dir):
