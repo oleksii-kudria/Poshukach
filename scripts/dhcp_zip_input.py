@@ -8,6 +8,7 @@ paths together with the direct CSV inputs discovered by the original iterator.
 from __future__ import annotations
 
 import atexit
+import os
 import re
 import shutil
 import tempfile
@@ -84,6 +85,70 @@ def _iter_zip_archives(dhcp_dir: Path) -> List[Path]:
     )
 
 
+def _remove_partial_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _validate_extracted_csv(
+    destination: Path,
+    *,
+    archive_path: Path,
+    member: zipfile.ZipInfo,
+) -> bool:
+    """Validate a CSV extracted from ZIP before exposing it to the parser."""
+
+    try:
+        actual_size = destination.stat().st_size
+    except OSError as exc:
+        print(
+            f'⚠️ ZIP {archive_path.name}: CSV {member.filename} пропущено - '
+            f"не вдалося перевірити temporary file: {exc}"
+        )
+        _remove_partial_file(destination)
+        return False
+
+    if actual_size == 0:
+        print(
+            f'⚠️ ZIP {archive_path.name}: CSV {member.filename} пропущено - '
+            "файл порожній після extraction"
+        )
+        _remove_partial_file(destination)
+        return False
+
+    if member.file_size != actual_size:
+        print(
+            f'⚠️ ZIP {archive_path.name}: CSV {member.filename} пропущено - '
+            f"неповний extraction (очікувалось {member.file_size} байт, "
+            f"отримано {actual_size})"
+        )
+        _remove_partial_file(destination)
+        return False
+
+    try:
+        with destination.open("rb") as handle:
+            has_nonempty_line = any(line.strip() for line in handle)
+    except OSError as exc:
+        print(
+            f'⚠️ ZIP {archive_path.name}: CSV {member.filename} пропущено - '
+            f"не вдалося прочитати temporary file: {exc}"
+        )
+        _remove_partial_file(destination)
+        return False
+
+    if not has_nonempty_line:
+        print(
+            f'⚠️ ZIP {archive_path.name}: CSV {member.filename} пропущено - '
+            "файл не містить непорожніх рядків після extraction"
+        )
+        _remove_partial_file(destination)
+        return False
+
+    return True
+
+
 def _extract_archive_csv_files(archive_path: Path, temp_root: Path) -> List[Path]:
     extracted: List[Path] = []
     archive_prefix = _safe_name(archive_path.stem)
@@ -118,17 +183,32 @@ def _extract_archive_csv_files(archive_path: Path, temp_root: Path) -> List[Path
                 temp_root,
                 f"{archive_prefix}__{member_token}",
             )
+            partial = destination.with_name(f".{destination.name}.part")
+            _remove_partial_file(partial)
 
             try:
-                with archive.open(member, "r") as source, destination.open("wb") as target:
+                with archive.open(member, "r") as source, partial.open("wb") as target:
                     shutil.copyfileobj(source, target)
+                    target.flush()
+                    os.fsync(target.fileno())
+                partial.replace(destination)
             except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+                _remove_partial_file(partial)
+                _remove_partial_file(destination)
                 print(
                     f"⚠️ Неможливо прочитати CSV {member.filename} "
                     f"з ZIP-архіву {archive_path.name}: {exc}"
                 )
                 continue
 
+            if not _validate_extracted_csv(
+                destination,
+                archive_path=archive_path,
+                member=member,
+            ):
+                continue
+
+            print(f"🔧 ZIP {archive_path.name}: extracted CSV {member.filename}")
             extracted.append(destination)
 
     return extracted
