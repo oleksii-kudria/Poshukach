@@ -13,6 +13,12 @@ data/**
 # Дозволяємо приклади CSV
 !data/**/*.example.csv
 
+# ZIP-архіви з DHCP-логами не зберігаємо в репозиторії
+data/raw/dhcp/**/*.zip
+data/raw/dhcp/*.zip
+data/raw/dhcp/**/*.ZIP
+data/raw/dhcp/*.ZIP
+
 __pycache__/
 *.pyc
 
