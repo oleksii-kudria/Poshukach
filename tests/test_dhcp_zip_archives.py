@@ -256,3 +256,74 @@ def test_duplicate_empty_then_valid_member_uses_valid_content(
     rows = _read_output(tmp_path)
     assert len(rows) == 1
     assert rows[0]["name"] == "Recovered"
+
+
+def test_csv_named_directory_is_not_opened_as_a_file_and_nested_csv_is_processed(
+    tmp_path: pathlib.Path,
+    capsys,
+):
+    dhcp_dir = tmp_path / "data" / "raw" / "dhcp"
+    dhcp_dir.mkdir(parents=True)
+
+    csv_named_dir = dhcp_dir / "2026-08-20-data_export.csv"
+    nested_dir = csv_named_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    (nested_dir / "inside.csv").write_text(
+        _dhcp_csv("10.0.0.4", "00:11:22:33:44:88", "192.168.1.13", "Nested", "1755006687895"),
+        encoding="utf-8",
+    )
+    (csv_named_dir / "readme.txt").write_text("ignored", encoding="utf-8")
+
+    assert psh.run_dhcp_aggregation(tmp_path) == 0
+    captured = capsys.readouterr()
+    assert "DHCP директорія 2026-08-20-data_export.csv: знайдено CSV файлів: 1" in captured.out
+    assert "Is a directory" not in captured.out
+
+    rows = _read_output(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Nested"
+
+
+def test_empty_csv_named_directory_is_skipped_without_is_a_directory_error(
+    tmp_path: pathlib.Path,
+    capsys,
+):
+    dhcp_dir = tmp_path / "data" / "raw" / "dhcp"
+    dhcp_dir.mkdir(parents=True)
+
+    (dhcp_dir / "empty-export.csv").mkdir()
+    (dhcp_dir / "direct.csv").write_text(
+        _dhcp_csv("10.0.0.5", "00:11:22:33:44:99", "192.168.1.14", "Direct", "1755006688895"),
+        encoding="utf-8",
+    )
+
+    assert psh.run_dhcp_aggregation(tmp_path) == 0
+    captured = capsys.readouterr()
+    assert "DHCP директорія empty-export.csv: CSV файли всередині відсутні" in captured.out
+    assert "Is a directory" not in captured.out
+
+    rows = _read_output(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Direct"
+
+
+def test_csv_named_directory_and_zip_inputs_are_processed_together(tmp_path: pathlib.Path):
+    dhcp_dir = tmp_path / "data" / "raw" / "dhcp"
+    dhcp_dir.mkdir(parents=True)
+
+    csv_named_dir = dhcp_dir / "directory.csv"
+    csv_named_dir.mkdir()
+    (csv_named_dir / "inside.csv").write_text(
+        _dhcp_csv("10.0.0.6", "00:11:22:33:44:AA", "192.168.1.15", "Directory", "1755006689895"),
+        encoding="utf-8",
+    )
+
+    with zipfile.ZipFile(dhcp_dir / "archive.zip", "w") as archive:
+        archive.writestr(
+            "archive.csv",
+            _dhcp_csv("10.0.0.7", "00:11:22:33:44:BB", "192.168.1.16", "Archive", "1755006690895"),
+        )
+
+    assert psh.run_dhcp_aggregation(tmp_path) == 0
+    rows = _read_output(tmp_path)
+    assert {row["name"] for row in rows} == {"Directory", "Archive"}
